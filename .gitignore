@@ -1,3 +1,19 @@
 build/bin
+
+# Node / frontend
 node_modules
 frontend/dist
+frontend/.env.local
+
+# Go build artifacts
+*.exe
+*.exe~
+*.out
+*.test
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+*.iml

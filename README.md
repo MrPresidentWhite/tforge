@@ -240,18 +240,25 @@ tforge --env dev @MyVault npm run dev
 
 ## Roadmap / Ideas
 
+**v1 – Core security & platform support**
+
 - OS‑backed `Protector` (DPAPI / Keychain / Secret Service)
-- explicit unlock / lock semantics in the agent (session + timeout)
-- more granular export modes (e.g. filter by group or type)
-- optional `.env` generation for CI/CD only (not for local dev)
-- first‑class Linux support (packaging, autostart, desktop integration)
-- vault sync across multiple TPM‑capable machines (secure, hardware‑backed)
 - improved agent security and unlock flows (session timeouts, re‑auth, optional PIN / biometrics)
-- local audit / activity log for vault usage (without logging secret values)
+- first‑class Linux support (packaging, autostart, desktop integration)
+- clear headless/CI story for using vaults in build pipelines
+
+**v2 – Developer experience & integrations**
+
+- more granular export modes (e.g. filter by group or type)
 - vault templates/presets for common stacks (e.g. Postgres + Redis + Next.js)
 - deeper tooling integration (Docker Compose, kubectl, Terraform, IDE extensions)
+- local audit / activity log for vault usage (without logging secret values)
+
+**Later – Advanced features**
+
+- vault sync across multiple TPM‑capable machines (secure, hardware‑backed)
 - encrypted backup/export and restore flow for vaults (disaster recovery)
-- clear headless/CI story for using vaults in build pipelines
+- optional `.env` generation for CI/CD only (not for local dev)
 
 ---
 
