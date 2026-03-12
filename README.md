@@ -42,6 +42,13 @@ TForge consists of three main pieces:
 
 The storage format is **local‑only**, there is no cloud backend.
 
+> **Status / Security disclaimer**
+>
+> TForge is currently a **personal proof‑of‑concept** and **not a production‑ready tool**.
+> The security model and implementation have **not been professionally reviewed or audited**.
+> Do **not** use it to store highly sensitive secrets in environments with strict security
+> or compliance requirements.
+
 ---
 
 ## Storage & Encryption
