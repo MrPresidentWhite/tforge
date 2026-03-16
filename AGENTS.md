@@ -17,7 +17,8 @@ It operates only on behalf of the maintainer and follows the rules below.
 ### Git, Commits & Branches
 
 - **Never change Git configuration** (no `git config`, no hook manipulation).
-- Only create commits **when explicitly requested** by the user.
+- Only create commits **when explicitly requested** by the user; never auto-commit
+  just because work has been completed.
 - Commit messages:
   - Short, descriptive English titles, e.g.:
     - `Use OS-backed DPAPI protector on Windows`

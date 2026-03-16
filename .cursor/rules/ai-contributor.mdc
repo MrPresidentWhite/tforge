@@ -12,7 +12,8 @@ alwaysApply: true
 
 - **Git, Commits, Branches**
   - Never change Git config or hooks.
-  - Only create commits when the user explicitly asks for it.
+  - Only create commits when the user explicitly asks for it; do not auto-commit
+    just because work has been completed.
   - Commit titles: short, descriptive, in English; link issues with `Fixes #<n>` / `Closes #<n>` when appropriate.
   - Never push unless explicitly requested.
   - When an AI agent contributes to a change, include it (and any other agents)
