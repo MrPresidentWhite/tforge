@@ -338,18 +338,20 @@ tforge --env dev @MyVault npm run dev
 
 ---
 
-## Installation on Linux (CLI + Agent)
+## Installation on Linux and macOS (CLI + Agent)
 
-TForge is intended to work on modern Linux distributions with:
+TForge is intended to work on modern Linux distributions and recent macOS
+versions with:
 
 - a recent Go toolchain,
-- **systemd user services** (for convenient autostart),
+- **systemd user services** on Linux (for convenient autostart),
+- or **LaunchAgents** on macOS,
 - and a desktop keyring implementation (for the keyring‑backed protector).
 
 ### Quick install via script (recommended)
 
-You can install the CLI and agent into `~/.local/bin` and set up a systemd
-user service for `tforge-agent` with a single command:
+You can install the CLI and agent into a user bin directory and set up
+autostart for `tforge-agent` with a single command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MrPresidentWhite/tforge/main/install-tforge-tools.sh | bash
@@ -366,8 +368,12 @@ The script will:
 - build `tforge` and `tforge-agent`,
 - place them into the chosen directory,
 - ensure that directory is on your `PATH` (by updating `~/.profile` if needed),
-- and, if `systemd --user` is available, create and enable a `tforge-agent.service`
-  user unit that starts the agent automatically on login.
+- and, depending on the platform:
+  - on **Linux**, if `systemd --user` is available, create and enable a
+    `tforge-agent.service` user unit that starts the agent automatically
+    on login,
+  - on **macOS**, create a `~/Library/LaunchAgents/dev.tforge.agent.plist`
+    LaunchAgent that runs `tforge-agent` on login and keeps it alive.
 
 ### Manual build (from a local clone)
 

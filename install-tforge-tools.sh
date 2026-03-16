@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Simple installer for non-Windows systems.
+# Simple installer for non-Windows systems (Linux and macOS).
 # - can be run inside a cloned repo OR remotely via curl|bash
 # - builds tforge and tforge-agent
-# - installs them into a user bin directory (default: ~/.local/bin)
-# - optionally sets up a systemd user service for tforge-agent
+# - installs them into a user bin directory
+# - optionally sets up autostart for tforge-agent
 
 REPO_URL="${REPO_URL:-https://github.com/MrPresidentWhite/tforge.git}"
 
-INSTALL_DIR="${1:-"$HOME/.local/bin"}"
+OS="$(uname -s)"
+
+if [ "$#" -ge 1 ]; then
+  INSTALL_DIR="$1"
+else
+  case "$OS" in
+    Darwin)
+      INSTALL_DIR="$HOME/bin"
+      ;;
+    *)
+      INSTALL_DIR="$HOME/.local/bin"
+      ;;
+  esac
+fi
 
 echo "Installing tforge CLI and agent to: $INSTALL_DIR"
 echo
@@ -69,16 +82,18 @@ fi
 
 echo
 
-# Optional: set up systemd user service for tforge-agent, if systemd is available.
-if command -v systemctl >/dev/null 2>&1; then
-  SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd/user"
-  mkdir -p "$SYSTEMD_USER_DIR"
+case "$OS" in
+  Linux)
+    # Optional: set up systemd user service for tforge-agent, if systemd is available.
+    if command -v systemctl >/dev/null 2>&1; then
+      SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd/user"
+      mkdir -p "$SYSTEMD_USER_DIR"
 
-  SERVICE_PATH="${SYSTEMD_USER_DIR}/tforge-agent.service"
+      SERVICE_PATH="${SYSTEMD_USER_DIR}/tforge-agent.service"
 
-  echo "Creating systemd user service at: $SERVICE_PATH"
+      echo "Creating systemd user service at: $SERVICE_PATH"
 
-  cat > "$SERVICE_PATH" <<EOF
+      cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=TForge local vault agent
 
@@ -90,16 +105,61 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
-  echo "Reloading systemd user units and enabling tforge-agent.service (if supported)..."
-  if systemctl --user daemon-reload >/dev/null 2>&1; then
-    systemctl --user enable --now tforge-agent.service >/dev/null 2>&1 || \
-      echo "Warning: could not enable/start tforge-agent.service. You may need to run 'systemctl --user enable --now tforge-agent.service' manually."
-  else
-    echo "Warning: 'systemctl --user' not available; systemd user service was written but not enabled."
-  fi
-else
-  echo "systemctl not found; skipping systemd user service setup."
-fi
+      echo "Reloading systemd user units and enabling tforge-agent.service (if supported)..."
+      if systemctl --user daemon-reload >/dev/null 2>&1; then
+        systemctl --user enable --now tforge-agent.service >/dev/null 2>&1 || \
+          echo "Warning: could not enable/start tforge-agent.service. You may need to run 'systemctl --user enable --now tforge-agent.service' manually."
+      else
+        echo "Warning: 'systemctl --user' not available; systemd user service was written but not enabled."
+      fi
+    else
+      echo "systemctl not found; skipping systemd user service setup."
+    fi
+    ;;
+  Darwin)
+    # Optional: set up a LaunchAgents plist for tforge-agent on macOS.
+    LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+    PLIST_PATH="$LAUNCH_AGENTS_DIR/dev.tforge.agent.plist"
+
+    echo "Creating LaunchAgent at: $PLIST_PATH"
+
+    cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>dev.tforge.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${INSTALL_DIR}/tforge-agent</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${HOME}/Library/Logs/tforge-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>${HOME}/Library/Logs/tforge-agent.err.log</string>
+  </dict>
+</plist>
+EOF
+
+    echo "Loading LaunchAgent via launchctl (if possible)..."
+    if command -v launchctl >/dev/null 2>&1; then
+      launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
+      launchctl load -w "$PLIST_PATH" >/dev/null 2>&1 || \
+        echo "Warning: could not load LaunchAgent. You may need to run 'launchctl load -w \"$PLIST_PATH\"' manually."
+    else
+      echo "launchctl not found; LaunchAgent plist created but not loaded."
+    fi
+    ;;
+  *)
+    echo "No automatic autostart integration for OS: $OS"
+    ;;
+esac
 
 echo
 echo "Done."
