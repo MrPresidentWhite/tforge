@@ -5,8 +5,11 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
+
+	fsnotify "github.com/fsnotify/fsnotify"
 
 	"tforge/internal/secure"
 	"tforge/internal/storage"
@@ -56,12 +59,15 @@ func main() {
 		agent.svc.SetAll(vaults)
 	}
 
+	agent.startVaultWatcher(cfgDir)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", agent.handleHealth)
 	mux.HandleFunc("/env", agent.handleEnv)
 	mux.HandleFunc("/lock", agent.handleLock)
 	mux.HandleFunc("/unlock", agent.handleUnlock)
 	mux.HandleFunc("/status", agent.handleStatus)
+	mux.HandleFunc("/reload", agent.handleReload)
 
 	server := &http.Server{
 		Addr:    "127.0.0.1:5959",
@@ -136,6 +142,47 @@ func (a *Agent) startInactivityWatcher() {
 	}()
 }
 
+// startVaultWatcher watches the vaults.bin file for changes and reloads the
+// in-memory vault list when it changes. This keeps the agent in sync with
+// external writers (e.g. GUI or CLI import) without requiring a restart.
+func (a *Agent) startVaultWatcher(cfgDir string) {
+	vaultPath := filepath.Join(cfgDir, "vaults.bin")
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("vault watcher init error: %v", err)
+		return
+	}
+
+	dir := filepath.Dir(vaultPath)
+	if err := watcher.Add(dir); err != nil {
+		log.Printf("vault watcher add error: %v", err)
+		_ = watcher.Close()
+		return
+	}
+
+	go func() {
+		defer watcher.Close()
+		for {
+			select {
+			case ev, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if ev.Name == vaultPath && (ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0) {
+					if err := a.reloadVaultsFromDisk(); err != nil {
+						log.Printf("vault reload error: %v", err)
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("vault watcher error: %v", err)
+			}
+		}
+	}()
+}
+
 func (a *Agent) setLocked(v bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -155,6 +202,34 @@ type envResponse struct {
 type statusResponse struct {
 	Locked         bool  `json:"locked"`
 	TimeoutSeconds int64 `json:"timeoutSeconds"`
+}
+
+// reloadVaultsFromDisk loads vaults from disk and replaces the in-memory state.
+func (a *Agent) reloadVaultsFromDisk() error {
+	vaults, err := storage.LoadVaults(a.protector)
+	if err != nil {
+		return err
+	}
+	a.svc.SetAll(vaults)
+	return nil
+}
+
+// handleReload re-reads vaults from disk and replaces the in-memory state.
+// Useful after the CLI (or another process) has created or updated vaults
+// so the agent sees them without a restart.
+func (a *Agent) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	a.touchActivity()
+
+	if err := a.reloadVaultsFromDisk(); err != nil {
+		http.Error(w, "reload: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("reloaded"))
 }
 
 func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {

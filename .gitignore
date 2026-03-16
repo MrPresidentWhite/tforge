@@ -17,3 +17,6 @@ Thumbs.db
 *.log
 .idea/
 *.iml
+
+tforge
+tforge-agent

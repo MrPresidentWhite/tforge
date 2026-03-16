@@ -70,8 +70,10 @@ The code paths are:
   - on **Windows**, `NewDefaultProtector` uses a `DPAPIProtector` (Windows DPAPI,
     bound to the current user account) and falls back to `SoftwareProtector` only
     if DPAPI is not available
-  - on non‑Windows platforms, `NewDefaultProtector` currently uses `SoftwareProtector`
-    with a local AES‑256 key stored in the config directory
+  - on **macOS/Linux**, `NewDefaultProtector` first tries a keyring‑backed
+    `KeyringProtector` (Keychain / Secret Service via the OS keyring) and
+    falls back to `SoftwareProtector` with a local AES‑256 key stored in the
+    config directory if the keyring is not available
   - `Seal()` / `Unseal()` encrypt/decrypt the JSON‑encoded vault list
 
 The Wails app and the `tforge-agent` both use the same storage layer and call
@@ -134,7 +136,15 @@ POST /unlock
 
 GET /status
   -> 200 OK, JSON: { "locked": true|false, "timeoutSeconds": <int> }
+
+POST /reload
+  -> 200 OK, body: "reloaded"
 ```
+
+- `POST /reload` re-reads `vaults.bin` and updates the in-memory vault list.
+  The CLI calls this automatically after `--create-vault` so a running agent
+  sees the new vault without restart. You can also call it manually after
+  editing vaults on disk.
 
 Lock semantics:
 
@@ -155,7 +165,7 @@ Inactivity timeout:
   tforge-agent --lock-timeout=15m
   ```
 
-- Any request to `/health`, `/env`, `/lock` or `/unlock` counts as
+- Any request to `/health`, `/env`, `/lock`, `/unlock` or `/reload` counts as
   activity and resets the timer.
 - If `--lock-timeout` is not set or is `0`, the inactivity timeout is
   disabled and the agent will not auto-lock.
@@ -193,6 +203,9 @@ tforge --env prod @MyVault npm run dev
 
 # export mode (no process, just KEY=VALUE to stdout)
 tforge --env dev --export @MyVault
+
+# import mode (create a new vault from an env-style file)
+tforge --create-vault MyVault --file path/to/.env --type secrets --duplicate-to prod
 ```
 
 Rules:
@@ -202,6 +215,18 @@ Rules:
   - everything after that: command to run (optionally with a `--` separator)
 - CLI calls the agent at `http://127.0.0.1:5959/env?...` and merges returned
   env vars into the child process’s `Env`.
+
+Import mode:
+
+- `tforge --create-vault <Name> --file <path>` creates a new vault directly
+  in the local storage, importing keys from an env-style file (`KEY=VALUE`,
+  `#` comments supported).
+- If the agent is running, the CLI triggers a reload so the new vault is
+  visible immediately; otherwise restart the agent to see it.
+- Values are imported into the `dev` environment by default; use
+  `--duplicate-to staging` or `--duplicate-to prod` to copy the same values
+  into another environment.
+- `--type` controls the entry type (`secrets` – default, `env`, or `note`).
 
 Example:
 
