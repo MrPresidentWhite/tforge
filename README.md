@@ -156,7 +156,6 @@ Inactivity timeout:
   activity and resets the timer.
 - If `--lock-timeout` is not set or is `0`, the inactivity timeout is
   disabled and the agent will not auto-lock.
-```
 
 Vault lookup:
 
