@@ -141,6 +141,21 @@ Lock semantics:
 - Lock/unlock is intentionally simple and **local-only** in this first
   iteration; there is no authentication yet. Future versions may add
   proper session-based security and re-auth flows.
+
+Inactivity timeout:
+
+- The agent supports an optional inactivity timeout that will **re-lock**
+  the agent after a period without activity.
+- It is configured via the `--lock-timeout` flag, for example:
+
+  ```bash
+  tforge-agent --lock-timeout=15m
+  ```
+
+- Any request to `/health`, `/env`, `/lock` or `/unlock` counts as
+  activity and resets the timer.
+- If `--lock-timeout` is not set or is `0`, the inactivity timeout is
+  disabled and the agent will not auto-lock.
 ```
 
 Vault lookup:

@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"tforge/internal/secure"
 	"tforge/internal/storage"
@@ -16,11 +18,16 @@ type Agent struct {
 	svc       *vault.Service
 	protector secure.Protector
 
-	mu     sync.RWMutex
-	locked bool
+	mu           sync.RWMutex
+	locked       bool
+	lastActivity time.Time
+	timeout      time.Duration
 }
 
 func main() {
+	lockTimeout := flag.Duration("lock-timeout", 0, "inactivity timeout before the agent auto-locks (0 = disabled)")
+	flag.Parse()
+
 	cfgDir, err := storage.ConfigDir()
 	if err != nil {
 		log.Fatalf("config dir: %v", err)
@@ -32,9 +39,13 @@ func main() {
 	}
 
 	agent := &Agent{
-		svc:       vault.NewService(),
-		protector: protector,
+		svc:          vault.NewService(),
+		protector:    protector,
+		timeout:      *lockTimeout,
+		lastActivity: time.Now(),
 	}
+
+	agent.startInactivityWatcher()
 
 	// Load existing vaults.
 	vaults, err := storage.LoadVaults(protector)
@@ -61,6 +72,7 @@ func main() {
 }
 
 func (a *Agent) handleHealth(w http.ResponseWriter, r *http.Request) {
+	a.touchActivity()
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
@@ -74,6 +86,7 @@ func (a *Agent) handleLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.touchActivity()
 	a.setLocked(true)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("locked"))
@@ -88,9 +101,38 @@ func (a *Agent) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.touchActivity()
 	a.setLocked(false)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("unlocked"))
+}
+
+func (a *Agent) touchActivity() {
+	if a.timeout <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastActivity = time.Now()
+}
+
+func (a *Agent) startInactivityWatcher() {
+	if a.timeout <= 0 {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			a.mu.Lock()
+			if !a.locked && !a.lastActivity.IsZero() && time.Since(a.lastActivity) > a.timeout {
+				a.locked = true
+			}
+			a.mu.Unlock()
+		}
+	}()
 }
 
 func (a *Agent) setLocked(v bool) {
@@ -110,6 +152,7 @@ type envResponse struct {
 }
 
 func (a *Agent) handleEnv(w http.ResponseWriter, r *http.Request) {
+	a.touchActivity()
 	if a.isLocked() {
 		http.Error(w, "agent is locked; env access disabled", http.StatusLocked)
 		return
