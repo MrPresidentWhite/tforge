@@ -346,7 +346,30 @@ TForge is intended to work on modern Linux distributions with:
 - **systemd user services** (for convenient autostart),
 - and a desktop keyring implementation (for the keyring‑backed protector).
 
-### Build CLI and agent
+### Quick install via script (recommended)
+
+You can install the CLI and agent into `~/.local/bin` and set up a systemd
+user service for `tforge-agent` with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MrPresidentWhite/tforge/main/install-tforge-tools.sh | bash
+```
+
+You can also override the install directory (for example `~/.tforge/bin`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MrPresidentWhite/tforge/main/install-tforge-tools.sh | bash -s -- "$HOME/.tforge/bin"
+```
+
+The script will:
+
+- build `tforge` and `tforge-agent`,
+- place them into the chosen directory,
+- ensure that directory is on your `PATH` (by updating `~/.profile` if needed),
+- and, if `systemd --user` is available, create and enable a `tforge-agent.service`
+  user unit that starts the agent automatically on login.
+
+### Manual build (from a local clone)
 
 From the repo root:
 
