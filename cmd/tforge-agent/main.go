@@ -22,7 +22,7 @@ func main() {
 		log.Fatalf("config dir: %v", err)
 	}
 
-	protector, err := secure.NewSoftwareProtector(cfgDir)
+	protector, err := secure.NewDefaultProtector(cfgDir)
 	if err != nil {
 		log.Fatalf("protector init: %v", err)
 	}

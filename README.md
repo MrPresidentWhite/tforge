@@ -57,7 +57,6 @@ Persistent state lives under the OS config directory, e.g. on Windows:
 
 - `ConfigDir()` → `%APPDATA%\TForge`
 - vault data file: `vaults.bin`
-- master key file: `master.key`
 
 The code paths are:
 
@@ -65,18 +64,24 @@ The code paths are:
   - `ConfigDir()` – base config path
   - `LoadVaults()` / `SaveVaults()` – read/write encrypted blob
 
-- `internal/secure/protector.go`
-  - `SoftwareProtector` implements the `secure.Protector` interface
-  - `NewSoftwareProtector(configDir)` loads or creates `master.key` (32‑byte AES‑256 key)
-  - `Seal()` / `Unseal()` encrypt/decrypt using AES‑GCM
+- `internal/secure/protector.go` + platform‑specific defaults in
+  `internal/secure/protector_default*.go`
+  - `Protector` is the abstraction used by the app and agent
+  - on **Windows**, `NewDefaultProtector` uses a `DPAPIProtector` (Windows DPAPI,
+    bound to the current user account) and falls back to `SoftwareProtector` only
+    if DPAPI is not available
+  - on non‑Windows platforms, `NewDefaultProtector` currently uses `SoftwareProtector`
+    with a local AES‑256 key stored in the config directory
+  - `Seal()` / `Unseal()` encrypt/decrypt the JSON‑encoded vault list
 
-The Wails app and the `tforge-agent` both use the same protector and storage layer,
-so they always see the same vault state.
+The Wails app and the `tforge-agent` both use the same storage layer and call
+`NewDefaultProtector`, so they always see the same encrypted vault state for
+the current user.
 
-> **Future work**  
-> The `Protector` interface is intentionally small so it can be replaced later with
-> an OS‑backed implementation (e.g. DPAPI / Keychain / Secret Service) and/or tied
-> to a stronger OS login / biometric flow.
+> **Migration note**  
+> Older versions used only `SoftwareProtector` with a local `master.key` file.
+> Current builds on Windows use DPAPI by default; existing installations should
+> migrate their vaults before dropping legacy artefacts or switching machines.
 
 ---
 
@@ -146,15 +151,15 @@ Located in `cmd/tforge/main.go`.
 
 ```bash
 # default env = dev
-tforge @CineVault npm run dev
+tforge @MyVault npm run dev
 
 # explicit env selection
-tforge --env dev @CineVault npm run dev
-tforge --env staging @CineVault npm run dev
-tforge --env prod @CineVault npm run dev
+tforge --env dev @MyVault npm run dev
+tforge --env staging @MyVault npm run dev
+tforge --env prod @MyVault npm run dev
 
 # export mode (no process, just KEY=VALUE to stdout)
-tforge --env dev --export @CineVault
+tforge --env dev --export @MyVault
 ```
 
 Rules:
@@ -173,7 +178,7 @@ tforge-agent
 
 # in another
 cd my-project
-tforge --env dev @CineVault npm run dev
+tforge --env dev @MyVault npm run dev
 ```
 
 No `.env` file is created on disk; the secrets live only in memory and in the
@@ -249,23 +254,24 @@ tforge --env dev @MyVault npm run dev
 
 **v1 – Core security & platform support**
 
-- OS‑backed `Protector` (DPAPI / Keychain / Secret Service)
-- improved agent security and unlock flows (session timeouts, re‑auth, optional PIN / biometrics)
-- first‑class Linux support (packaging, autostart, desktop integration)
-- clear headless/CI story for using vaults in build pipelines
+- [x] ~~OS‑backed `Protector` on Windows (DPAPI)~~
+- [ ] OS‑backed `Protector` on macOS/Linux (Keychain / Secret Service)
+- [ ] improved agent security and unlock flows (session timeouts, re‑auth, optional PIN / biometrics)
+- [ ] first‑class Linux support (packaging, autostart, desktop integration)
+- [ ] clear headless/CI story for using vaults in build pipelines
 
 **v2 – Developer experience & integrations**
 
-- more granular export modes (e.g. filter by group or type)
-- vault templates/presets for common stacks (e.g. Postgres + Redis + Next.js)
-- deeper tooling integration (Docker Compose, kubectl, Terraform, IDE extensions)
-- local audit / activity log for vault usage (without logging secret values)
+- [ ] more granular export modes (e.g. filter by group or type)
+- [ ] vault templates/presets for common stacks (e.g. Postgres + Redis + Next.js)
+- [ ] deeper tooling integration (Docker Compose, kubectl, Terraform, IDE extensions)
+- [ ] local audit / activity log for vault usage (without logging secret values)
 
 **Later – Advanced features**
 
-- vault sync across multiple TPM‑capable machines (secure, hardware‑backed)
-- encrypted backup/export and restore flow for vaults (disaster recovery)
-- optional `.env` generation for CI/CD only (not for local dev)
+- [ ] vault sync across multiple TPM‑capable machines (secure, hardware‑backed)
+- [ ] encrypted backup/export and restore flow for vaults (disaster recovery)
+- [ ] optional `.env` generation for CI/CD only (not for local dev)
 
 ---
 

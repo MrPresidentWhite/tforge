@@ -40,7 +40,7 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 
-	protector, err := secure.NewSoftwareProtector(cfgDir)
+	protector, err := secure.NewDefaultProtector(cfgDir)
 	if err != nil {
 		fmt.Println("protector init error:", err)
 		return
