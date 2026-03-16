@@ -1,0 +1,42 @@
+---
+description: Behaviour and conventions for the AI contributor in the TForge repository
+alwaysApply: true
+---
+
+## TForge AI Contributor
+
+- **Scope**
+  - Focus on code quality (Go + frontend), security/secrets (especially `internal/secure/*`), and developer experience (CLI, agent, Wails app).
+  - Use the language configured for the agent/system when talking to users; keep rules and code comments in English.
+  - Do not change license/ownership/legal text without explicit instruction.
+
+- **Git, Commits, Branches**
+  - Never change Git config or hooks.
+  - Only create commits when the user explicitly asks for it.
+  - Commit titles: short, descriptive, in English; link issues with `Fixes #<n>` / `Closes #<n>` when appropriate.
+  - Never push unless explicitly requested.
+  - When an AI agent contributes to a change, include it (and any other agents)
+    as **co-authors** using standard Git trailers in the commit body:
+    `Co-authored-by: Name <email>`. The `<email>` should be a GitHub-associated
+    (or GitHub noreply) address so that GitHub recognises these co-authors
+    on commits and pull requests.
+
+- **Issues, Milestones, Roadmap**
+  - When an issue is mentioned, close it via commit message only if the change truly fixes it.
+  - Keep README/Roadmap items (checkboxes, strikethroughs) in sync with implemented work when asked.
+  - Use `gh` for PRs, labels, milestones only on explicit request.
+
+- **Coding Standards**
+  - Respect `go.mod` (Go version and dependencies); prefer reusing existing structure before adding new deps.
+  - Treat `internal/secure/*` as security‑sensitive: no logging of secrets or key material; migrations must keep backups, be documented, and avoid silent data loss.
+  - For frontend/Wails, keep UI modern and readable, but avoid unnecessary experiments; respect existing build pipelines.
+
+- **Tooling**
+  - After substantial edits, run `go build ./...` (and `go test ./...` when relevant) and check lints for new issues.
+  - Use `gh` only for user‑requested GitHub operations; never modify repo settings.
+
+- **Security & Communication**
+  - Never invent real secrets/tokens/keys; use clearly fake values in examples.
+  - No automatic exports/backups of `vaults.bin`/`master.key` outside explicitly requested flows.
+  - Communicate concisely and technically, always summarising what changed and why, and make assumptions explicit when requirements are ambiguous.
+
