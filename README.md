@@ -80,6 +80,28 @@ The Wails app and the `tforge-agent` both use the same storage layer and call
 `NewDefaultProtector`, so they always see the same encrypted vault state for
 the current user.
 
+### Protector implementations & platform caveats
+
+- **DPAPIProtector (Windows)**  
+  - Uses the Windows **Data Protection API (DPAPI)** and is bound to the current user profile.
+  - Encrypted vault data can only be decrypted under the same Windows account.
+  - This avoids having to manage a separate key file, but you still need to protect your
+    Windows account (login password, disk encryption, etc.).
+
+- **KeyringProtector (macOS / Linux)**  
+  - Uses the OS keyring (e.g. **Keychain** on macOS, **Secret Service**/**gnome‑keyring** on Linux)
+    to store a randomly generated AES‑256 key.
+  - Requires a working desktop keyring; on minimal/headless Linux systems without a keyring
+    implementation, the keyring lookup will fail and TForge falls back to `SoftwareProtector`.
+  - When the keyring is available, the raw AES key is never stored in plaintext on disk.
+
+- **SoftwareProtector (all platforms, fallback)**  
+  - Stores a random AES‑256 key in `master.key` under the config directory and uses it to
+    encrypt `vaults.bin`.
+  - This is the simplest and most portable option, but you are responsible for backing up
+    `master.key` if you want to move vaults between machines, and you must protect access
+    to the config directory itself.
+
 > **Migration note**  
 > Older versions used only `SoftwareProtector` with a local `master.key` file.
 > Current builds on Windows use DPAPI by default; existing installations should
@@ -169,6 +191,14 @@ Inactivity timeout:
   activity and resets the timer.
 - If `--lock-timeout` is not set or is `0`, the inactivity timeout is
   disabled and the agent will not auto-lock.
+
+In practice:
+
+- The **lock state only affects API access** – it does not change how `vaults.bin` is
+  encrypted at rest; that is entirely handled by the configured `Protector`.
+- On a shared machine, always combine TForge with OS‑level protections (user accounts,
+  full disk encryption, screen lock) and do not rely on the lock feature as the only
+  security layer.
 
 Vault lookup:
 
@@ -308,12 +338,64 @@ tforge --env dev @MyVault npm run dev
 
 ---
 
+## Installation on Linux (CLI + Agent)
+
+TForge is intended to work on modern Linux distributions with:
+
+- a recent Go toolchain,
+- **systemd user services** (for convenient autostart),
+- and a desktop keyring implementation (for the keyring‑backed protector).
+
+### Build CLI and agent
+
+From the repo root:
+
+```bash
+go build ./cmd/tforge-agent
+go build ./cmd/tforge
+```
+
+Place the resulting binaries somewhere on your `PATH`, for example `~/.local/bin`.
+
+### Optional: systemd user service for autostart
+
+Create a user service unit at `~/.config/systemd/user/tforge-agent.service`:
+
+```ini
+[Unit]
+Description=TForge local vault agent
+
+[Service]
+ExecStart=%h/.local/bin/tforge-agent
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Reload and enable the service:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now tforge-agent.service
+```
+
+This starts `tforge-agent` automatically for your user session on login. You can
+inspect the status and logs via:
+
+```bash
+systemctl --user status tforge-agent.service
+journalctl --user -u tforge-agent.service
+```
+
+---
+
 ## Roadmap / Ideas
 
 **v1 – Core security & platform support**
 
 - [x] ~~OS‑backed `Protector` on Windows (DPAPI)~~
-- [ ] OS‑backed `Protector` on macOS/Linux (Keychain / Secret Service)
+- [x] ~~OS‑backed `Protector` on macOS/Linux (Keychain / Secret Service)~~
 - [ ] improved agent security and unlock flows (session timeouts, re‑auth, optional PIN / biometrics)
 - [ ] first‑class Linux support (packaging, autostart, desktop integration)
 - [ ] clear headless/CI story for using vaults in build pipelines
