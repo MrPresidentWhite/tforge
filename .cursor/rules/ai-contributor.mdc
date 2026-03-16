@@ -31,6 +31,10 @@ alwaysApply: true
   - Respect `go.mod` (Go version and dependencies); prefer reusing existing structure before adding new deps.
   - Treat `internal/secure/*` as security‑sensitive: no logging of secrets or key material; migrations must keep backups, be documented, and avoid silent data loss.
   - For frontend/Wails, keep UI modern and readable, but avoid unnecessary experiments; respect existing build pipelines.
+  - For any change that affects public behaviour or APIs (CLI flags, HTTP
+    endpoints, agent security model), always **ask the user explicitly** whether
+    README or other docs should be updated before creating a commit, and propose
+    concrete documentation updates where appropriate.
 
 - **Tooling**
   - After substantial edits, run `go build ./...` (and `go test ./...` when relevant) and check lints for new issues.

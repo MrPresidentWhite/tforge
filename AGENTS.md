@@ -52,6 +52,10 @@ It operates only on behalf of the maintainer and follows the rules below.
     - keep backups
     - be clearly documented in the README
     - avoid silent data loss
+  - For any change that affects public behaviour or APIs (CLI flags, HTTP
+    endpoints, agent security model), the AI contributor must **ask the user**
+    whether README or other docs should be updated before creating a commit,
+    and suggest concrete doc changes where appropriate.
 
 ### Coding Standards (Frontend)
 

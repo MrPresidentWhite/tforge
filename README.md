@@ -299,6 +299,11 @@ Contributions, feedback and ideas are very welcome.
 - **Pull requests**: Prefer small, focused PRs with a short description of the motivation and main changes.
 - **Discussion**: For larger changes, open an issue first to discuss the design before you start implementing.
 
+When using AI assistants or agents (for example to generate code or refactors),
+please keep them aligned with the project-specific guidance in `AGENTS.md` and
+the Cursor rule `.cursor/rules/ai-contributor.mdc` (commit behaviour, security
+considerations and co-author attribution).
+
 ---
 
 ## License
