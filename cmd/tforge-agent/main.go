@@ -61,6 +61,7 @@ func main() {
 	mux.HandleFunc("/env", agent.handleEnv)
 	mux.HandleFunc("/lock", agent.handleLock)
 	mux.HandleFunc("/unlock", agent.handleUnlock)
+	mux.HandleFunc("/status", agent.handleStatus)
 
 	server := &http.Server{
 		Addr:    "127.0.0.1:5959",
@@ -149,6 +150,35 @@ func (a *Agent) isLocked() bool {
 
 type envResponse struct {
 	Env map[string]string `json:"env"`
+}
+
+type statusResponse struct {
+	Locked         bool  `json:"locked"`
+	TimeoutSeconds int64 `json:"timeoutSeconds"`
+}
+
+func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	a.mu.RLock()
+	locked := a.locked
+	var timeoutSeconds int64
+	if a.timeout > 0 {
+		timeoutSeconds = int64(a.timeout.Seconds())
+	}
+	a.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(statusResponse{
+		Locked:         locked,
+		TimeoutSeconds: timeoutSeconds,
+	}); err != nil {
+		http.Error(w, "encode response", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (a *Agent) handleEnv(w http.ResponseWriter, r *http.Request) {

@@ -131,6 +131,9 @@ POST /lock
 
 POST /unlock
   -> 200 OK, body: "unlocked"
+
+GET /status
+  -> 200 OK, JSON: { "locked": true|false, "timeoutSeconds": <int> }
 ```
 
 Lock semantics:
