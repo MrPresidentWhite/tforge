@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"tforge/internal/secure"
 	"tforge/internal/storage"
@@ -14,6 +15,9 @@ import (
 type Agent struct {
 	svc       *vault.Service
 	protector secure.Protector
+
+	mu     sync.RWMutex
+	locked bool
 }
 
 func main() {
@@ -44,6 +48,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", agent.handleHealth)
 	mux.HandleFunc("/env", agent.handleEnv)
+	mux.HandleFunc("/lock", agent.handleLock)
+	mux.HandleFunc("/unlock", agent.handleUnlock)
 
 	server := &http.Server{
 		Addr:    "127.0.0.1:5959",
@@ -59,11 +65,56 @@ func (a *Agent) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// handleLock puts the agent into a locked state where env access is disabled.
+// This is intentionally simple and local-only for v1.1; there is no
+// authentication yet.
+func (a *Agent) handleLock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	a.setLocked(true)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("locked"))
+}
+
+// handleUnlock returns the agent to the unlocked state so env access works
+// again. Like handleLock, this is intentionally simple for the first
+// iteration and does not yet enforce authentication.
+func (a *Agent) handleUnlock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	a.setLocked(false)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("unlocked"))
+}
+
+func (a *Agent) setLocked(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.locked = v
+}
+
+func (a *Agent) isLocked() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.locked
+}
+
 type envResponse struct {
 	Env map[string]string `json:"env"`
 }
 
 func (a *Agent) handleEnv(w http.ResponseWriter, r *http.Request) {
+	if a.isLocked() {
+		http.Error(w, "agent is locked; env access disabled", http.StatusLocked)
+		return
+	}
+
 	q := r.URL.Query()
 	vaultRef := q.Get("vault")
 	if vaultRef == "" {

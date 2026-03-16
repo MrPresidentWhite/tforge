@@ -125,13 +125,29 @@ GET /health
 GET /env?vault=<nameOrID>&env=<dev|staging|prod>
   -> 200 OK, JSON: { "env": { KEY: VALUE, ... } }
   -> 404 if vault not found
+
+POST /lock
+  -> 200 OK, body: "locked"
+
+POST /unlock
+  -> 200 OK, body: "unlocked"
+```
+
+Lock semantics:
+
+- When the agent is **locked**, `/env` refuses to return any environment
+  data and instead responds with `423 Locked` and a short error message
+  (`"agent is locked; env access disabled"`).
+- Lock/unlock is intentionally simple and **local-only** in this first
+  iteration; there is no authentication yet. Future versions may add
+  proper session-based security and re-auth flows.
 ```
 
 Vault lookup:
 
 - matches either by `Vault.ID` or `Vault.Name`
 
-Env mapping:
+Env mapping (when unlocked):
 
 - picks `ValueDev` / `ValueStage` / `ValueProd` based on `env` query parameter
 - skips empty values
