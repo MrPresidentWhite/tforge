@@ -534,6 +534,9 @@ textarea {
     display: grid;
     align-items: stretch;
     border-bottom: 1px solid var(--border);
+    /* Durchgehend, damit die Fuehrungslinie gruppierter Zeilen das Raster
+       nicht gegen den Rest verschiebt. */
+    border-left: 2px solid transparent;
 }
 
 .key-row:last-child {
@@ -576,6 +579,17 @@ textarea {
 
 .key-row-entry {
     transition: background 0.1s;
+}
+
+/* Zugehoerigkeit zu einer Gruppe wird pro Zeile getragen, nicht nur durch die
+   Naehe zur Ueberschrift: einzelne Keys direkt unter der letzten Gruppe sahen
+   sonst aus, als gehoerten sie noch dazu. */
+.key-row-entry.is-grouped {
+    border-left-color: rgba(99, 132, 255, 0.45);
+}
+
+.key-row-entry.is-grouped .cell-key {
+    padding-left: 16px;
 }
 
 .key-row-entry:hover {
@@ -792,10 +806,29 @@ textarea {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 7px 10px 7px 12px;
+    padding: 7px 10px 7px 10px;
     background: rgba(255, 255, 255, 0.022);
     border-bottom: 1px solid var(--border);
+    border-left: 2px solid rgba(99, 132, 255, 0.45);
     cursor: pointer;
+}
+
+/* Der Block der einzelnen Keys ist keine Gruppe und sieht auch nicht so aus:
+   keine Fuehrungslinie, keine Mono-Schrift, und deutlich abgesetzt von dem,
+   was darueber steht. */
+.group-row.is-standalone {
+    border-left-color: transparent;
+    border-top: 1px solid var(--border-strong);
+    margin-top: 10px;
+    background: transparent;
+}
+
+.group-standalone-name {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.7px;
+    text-transform: uppercase;
+    color: var(--text-faint);
 }
 
 .group-row:hover {

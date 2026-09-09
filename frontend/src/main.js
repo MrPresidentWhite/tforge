@@ -736,23 +736,36 @@ function renderKeyTable(groups) {
     table.appendChild(head);
 
     for (const group of groups) {
-        if (!group.isUngrouped) {
-            const collapsed = isGroupCollapsed(group.key);
-            const header = el('div', 'group-row' + (collapsed ? ' is-collapsed' : ''), [
+        const collapsed = isGroupCollapsed(group.key);
+
+        // Auch der Block der einzelnen Keys bekommt eine Ueberschrift. Ohne
+        // sie schlossen sie direkt an die letzte Gruppe an und sahen aus, als
+        // gehoerten sie noch dazu.
+        const header = group.isUngrouped
+            ? el('div', 'group-row is-standalone' + (collapsed ? ' is-collapsed' : ''), [
+                el('span', 'group-caret', [icon('chevronDown', 14)]),
+                el('span', 'group-standalone-name', ['Einzelne Keys']),
+                el('span', 'group-badge', [String(group.items.length)]),
+            ])
+            : el('div', 'group-row' + (collapsed ? ' is-collapsed' : ''), [
                 el('span', 'group-caret', [icon('chevronDown', 14)]),
                 el('span', 'group-name', [group.prefix.replace(/_$/, '')]),
                 el('span', 'group-badge', [String(group.items.length)]),
             ]);
-            header.onclick = () => {
-                state.collapsedGroups[group.key] = !collapsed;
-                render();
-            };
-            table.appendChild(header);
-            if (collapsed) continue;
-        }
+
+        header.onclick = () => {
+            state.collapsedGroups[group.key] = !collapsed;
+            render();
+        };
+        table.appendChild(header);
+        if (collapsed) continue;
 
         for (const item of group.items) {
-            table.appendChild(renderEntryRow(item, group, envs));
+            const row = renderEntryRow(item, group, envs);
+            // Die Zugehoerigkeit haengt sonst allein an der Naehe zur
+            // Ueberschrift; die Markierung traegt sie in jede Zeile.
+            if (!group.isUngrouped) row.classList.add('is-grouped');
+            table.appendChild(row);
         }
     }
 
