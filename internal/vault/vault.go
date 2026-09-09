@@ -86,7 +86,13 @@ func (s *Service) SetAll(vaults []*Vault) {
 		if v == nil || v.ID == "" {
 			continue
 		}
-		s.vaults[v.ID] = clone(v)
+		copied := clone(v)
+		// Normalise on the way in as well, so what is displayed already
+		// follows the rule. This only touches the in-memory copy; the file on
+		// disk is rewritten when the user next saves something, not just for
+		// having opened the app.
+		NormalizeGroups(copied.Entries)
+		s.vaults[v.ID] = copied
 	}
 }
 
@@ -148,6 +154,10 @@ func (s *Service) UpdateVault(updated *Vault) bool {
 	existing.Icon = updated.Icon
 	existing.Description = updated.Description
 	existing.Entries = append([]Entry(nil), updated.Entries...)
+	// Every edit funnels through here, which makes this the one place where
+	// grouping can be kept honest: a group that lost members below the
+	// minimum dissolves, and keys that now share a prefix come together.
+	NormalizeGroups(existing.Entries)
 	existing.UpdatedAt = time.Now().UTC()
 
 	return true

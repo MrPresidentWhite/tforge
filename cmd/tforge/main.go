@@ -267,6 +267,9 @@ func importEnvFileAsVault(name, duplicateTo, filePath, entryType string) error {
 	}
 
 	v := svc.CreateVault(name, "")
+	// The CLI import produced a flat list while the GUI grouped; both now go
+	// through the same rule.
+	vault.NormalizeGroups(entries)
 	v.Entries = entries
 	// Persist back to disk.
 	if err := storage.SaveVaults(prot, svc.ListVaults()); err != nil {

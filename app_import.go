@@ -65,7 +65,7 @@ func (a *App) AnalyseEnvImport(exampleText, devText, stagingText, prodText strin
 	}
 
 	keys := envfile.Keys(examplePairs)
-	groups, ungrouped := envfile.DetectGroups(keys)
+	groups, ungrouped := vault.DetectGroups(keys)
 
 	analysis := &ImportAnalysis{
 		Keys:      keys,
@@ -298,10 +298,11 @@ func (a *App) ApplyEnvValues(vaultID, envName string, values map[string]string, 
 			continue
 		}
 		existing[key] = true
+		// The group prefix is left empty on purpose: UpdateVault normalises
+		// grouping, so a new key lands in the group its name belongs to.
 		v.Entries = append(v.Entries, vault.Entry{
-			Key:         key,
-			GroupPrefix: prefixForKey(v.Entries, key),
-			Type:        vault.EntryTypeSecret,
+			Key:  key,
+			Type: vault.EntryTypeSecret,
 		})
 	}
 
@@ -325,20 +326,4 @@ func (a *App) ApplyEnvValues(vaultID, envName string, values map[string]string, 
 
 	fresh, _ := a.vaults.GetVault(vaultID)
 	return fresh, nil
-}
-
-// prefixForKey gives a newly added key the group prefix of an existing group
-// it belongs to, so an imported key lands in the group it obviously belongs
-// to rather than sitting on its own.
-func prefixForKey(entries []vault.Entry, key string) string {
-	best := ""
-	for _, e := range entries {
-		if e.GroupPrefix == "" || !strings.HasPrefix(key, e.GroupPrefix) {
-			continue
-		}
-		if len(e.GroupPrefix) > len(best) {
-			best = e.GroupPrefix
-		}
-	}
-	return best
 }

@@ -217,6 +217,13 @@ its own, and the prefix extends as far as every member agrees — so
 while a third key sharing only `NEXT_` keeps the group at `NEXT_`. Imported
 keys default to type `secret`.
 
+**The rule keeps holding after the import**, in both directions. Deleting
+members until only one is left dissolves the group back into a standalone key,
+and two standalone keys that share a prefix come together — a key added later
+also joins the group it obviously belongs to. A group that still has enough
+members keeps the prefix it has, even where the detection would derive a longer
+one, so a prefix chosen deliberately is never rewritten underneath you.
+
 Each environment file is then checked against the structure, **by key, never by
 position** — the order of the lines in any of the files is irrelevant. Both
 kinds of mismatch are reported, because ignoring either loses data:
