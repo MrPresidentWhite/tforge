@@ -591,28 +591,58 @@ journalctl --user -u tforge-agent.service
 
 ## Roadmap / Ideas
 
-**v1 – Core security & platform support**
+The ordering is driven by risk rather than by feature area. For a tool whose
+only job is holding secrets, *“I can always get my data back”* comes before
+everything else.
+
+**v1 – Data integrity & platform support**
 
 - [x] ~~OS‑backed `Protector` on Windows (DPAPI)~~
 - [x] ~~OS‑backed `Protector` on macOS/Linux (Keychain / Secret Service)~~
 - [x] ~~agent starts locked, with inactivity timeout and Windows Hello re‑auth on unlock~~
-- [ ] re‑auth on macOS (LocalAuthentication / Touch ID) and Linux — both are
+- [ ] **encrypted export / import for backup and recovery.** DPAPI is bound to
+      the Windows user profile: if that profile is gone — reinstall, corruption,
+      dead disk — `vaults.bin` cannot be decrypted by anything, and there is
+      currently no way out. Of everything on this list, this is the only gap
+      with no mitigation at all today.
+- [ ] **a versioned header for the storage format.** `vaults.bin` is currently
+      just `Seal(json.Marshal(vaults))`: no format version, no record of which
+      protector sealed it. That makes “sealed with a different protector”
+      indistinguishable from “corrupt file”, and turns any future format change
+      into guesswork. Export/import needs it as well, so it comes first.
+- [ ] **a guard against concurrent writes.** The GUI and the CLI both
+      read‑modify‑write the entire file without a lock. Deleting a vault from
+      the CLI while the GUI is open brings it back on the GUI’s next save, and
+      interleaved writes can drop entries.
+- [ ] re‑auth on macOS (LocalAuthentication / Touch ID), then Linux — both are
       still stubs that always succeed, so the lock offers no protection there
+- [ ] respect `Entry.Type` when building the environment; `note` entries are
+      currently injected into the child process like any other key
 - [ ] first‑class Linux support (packaging, autostart, desktop integration)
-- [ ] clear headless/CI story for using vaults in build pipelines
 
-**v2 – Developer experience & integrations**
+**v2 – Developer experience**
 
-- [ ] more granular export modes (e.g. filter by group or type)
-- [ ] vault templates/presets for common stacks (e.g. Postgres + Redis + Next.js)
-- [ ] deeper tooling integration (Docker Compose, kubectl, Terraform, IDE extensions)
-- [ ] local audit / activity log for vault usage (without logging secret values)
+- [ ] more granular export modes (filter by group or type), extending
+      `--export-format`
+- [ ] local activity log for vault usage, without logging secret values
+- [ ] **decide** the headless/CI story, then implement it. The open question is
+      not packaging but trust: a CI runner has no keyring, no DPAPI and no
+      Hello. Either it uses `SoftwareProtector` with a key supplied as a CI
+      secret — which makes TForge a wrapper around a secret the runner already
+      holds — or it generates a `.env` from an externally provided key, or
+      TForge is explicitly not meant for CI. Picking one is the actual work.
+- [ ] file‑based output for tools that cannot read environment variables.
+      Most integrations people ask for (`docker compose`, `kubectl`,
+      `terraform`) already work through `tforge exec` today; the remaining gap
+      is only where a tool insists on a file.
 
-**Later – Advanced features**
+**Later**
 
-- [ ] vault sync across multiple TPM‑capable machines (secure, hardware‑backed)
-- [ ] encrypted backup/export and restore flow for vaults (disaster recovery)
-- [ ] optional `.env` generation for CI/CD only (not for local dev)
+- [ ] vault sync across multiple machines — worth revisiting only if encrypted
+      export/import turns out to be insufficient in practice. Sync means key
+      exchange, conflict resolution and a trust model: a large amount of
+      security‑critical surface for a benefit that export largely already
+      delivers.
 
 ---
 
