@@ -11,6 +11,8 @@ import {
     StartupError,
     ChooseEnvFile,
     AnalyseEnvImport,
+    AnalyseEnvForVault,
+    ApplyEnvValues,
     CreateVaultFromImport,
     ChooseBackupTarget,
     ChooseBackupSource,
@@ -126,6 +128,7 @@ const state = {
     addPanel: null,
     vaultModal: null,
     importReview: null,
+    envImport: null,
     backupModal: null,
     convertModal: null,
     duplicateModal: null,
@@ -1344,6 +1347,7 @@ function renderVaultModal() {
             ]),
         ]),
         importing ? renderImportFilePickers(m) : null,
+        m.mode === 'edit' ? renderEnvImportSection(m) : null,
         el('div', 'modal-actions', [
             button('btn btn-ghost', ['Abbrechen'], close),
             importing
@@ -1784,6 +1788,232 @@ function renderImportReview() {
 }
 
 /* ==========================================================================
+   Werte nachträglich in einen bestehenden Vault importieren
+   ========================================================================== */
+
+// renderEnvImportSection shows, per environment, how much of the vault is
+// already filled and offers to import the rest from a file. The fill counts
+// are the point: they say at a glance which environment still needs values.
+function renderEnvImportSection(m) {
+    const target = state.vaults.find(v => v.id === m.id);
+    if (!target) return null;
+
+    const entries = target.entries || [];
+    const total = entries.length;
+    if (total === 0) return null;
+
+    const rows = el('div', 'env-import-list', []);
+
+    for (const env of ENVS) {
+        const filled = entries.filter(e => (e[ENV_FIELD[env]] || '') !== '').length;
+        const empty = filled === 0;
+
+        rows.appendChild(el('div', 'env-import-row' + (empty ? ' is-empty' : ''), [
+            el('span', 'env-dot for-' + env),
+            el('div', 'env-import-main', [
+                el('div', 'env-import-label', [ENV_LABEL[env]]),
+                el('div', 'env-import-meta', [
+                    empty ? 'noch keine Werte' : filled + ' von ' + total + ' belegt',
+                ]),
+            ]),
+            button('btn btn-ghost btn-sm', [icon('upload', 13), 'Datei'],
+                () => pickEnvImport(target, env),
+                ENV_LABEL[env] + '-Werte aus einer Datei importieren'),
+        ]));
+    }
+
+    return el('div', 'modal-field', [
+        el('label', 'modal-label', ['Werte importieren']),
+        el('div', 'modal-desc', [
+            'Eine .env-Datei hochladen und einer Umgebung zuordnen. Die Keys dieses Vaults geben dabei die Struktur vor.',
+        ]),
+        rows,
+    ]);
+}
+
+async function pickEnvImport(target, env) {
+    try {
+        const picked = await ChooseEnvFile(ENV_LABEL[env] + '-Werte auswählen');
+        if (!picked) return;
+
+        const analysis = await AnalyseEnvForVault(target.id, env, picked.content);
+
+        state.envImport = {
+            vaultId: target.id,
+            vaultName: target.name,
+            env,
+            fileName: picked.name,
+            analysis,
+            fills: {},
+            adopt: {},
+            overwrite: false,
+            busy: false,
+        };
+        state.vaultModal = null;
+        render();
+    } catch (err) {
+        toast('Import fehlgeschlagen: ' + describeError(err), 'error');
+    }
+}
+
+// buildEnvImportValues decides what actually gets written.
+function buildEnvImportValues(imp) {
+    const analysis = imp.analysis;
+    const unknown = new Set(analysis.unknown || []);
+    const willOverwrite = new Set(analysis.overwrite || []);
+    const values = {};
+
+    for (const [key, value] of Object.entries(analysis.values || {})) {
+        // Ein unbekannter Key kommt nur mit, wenn er uebernommen werden soll.
+        if (unknown.has(key) && !imp.adopt[key]) continue;
+        // Vorhandene Werte bleiben stehen, solange nicht ausdruecklich
+        // ueberschrieben werden soll.
+        if (willOverwrite.has(key) && !imp.overwrite) continue;
+        values[key] = value;
+    }
+
+    // Manuell nachgetragene Werte fuellen die Luecken.
+    for (const [key, value] of Object.entries(imp.fills || {})) {
+        if (value) values[key] = value;
+    }
+
+    return values;
+}
+
+function renderEnvImportReview() {
+    const imp = state.envImport;
+    const analysis = imp.analysis;
+    const close = () => { state.envImport = null; render(); };
+
+    const missing = analysis.missing || [];
+    const unknown = analysis.unknown || [];
+    const conflicts = analysis.overwrite || [];
+
+    const body = el('div', null, []);
+
+    const planned = Object.keys(buildEnvImportValues(imp)).length;
+    body.appendChild(el('div', 'import-summary', [
+        el('span', 'env-dot for-' + imp.env),
+        planned + (planned === 1 ? ' Wert wird gesetzt' : ' Werte werden gesetzt'),
+        el('span', 'import-summary-file', [imp.fileName]),
+    ]));
+
+    // Konflikte zuerst: hier steht etwas auf dem Spiel.
+    if (conflicts.length > 0) {
+        const warn = el('div', 'modal-warning', [
+            conflicts.length + (conflicts.length === 1
+                ? ' Key hat in ' + ENV_LABEL[imp.env] + ' bereits einen Wert.'
+                : ' Keys haben in ' + ENV_LABEL[imp.env] + ' bereits einen Wert.'),
+            el('div', 'modal-key-chips', conflicts.slice(0, 12).map(k => el('span', 'modal-key-chip', [k]))),
+        ]);
+        body.appendChild(warn);
+
+        body.appendChild(el('div', 'import-adopt-row', [
+            button('row-check' + (imp.overwrite ? ' is-checked' : ''), [icon('check', 11)], () => {
+                imp.overwrite = !imp.overwrite;
+                render();
+            }, 'Vorhandene Werte überschreiben'),
+            el('span', null, [
+                imp.overwrite
+                    ? 'Vorhandene Werte werden überschrieben'
+                    : 'Vorhandene Werte bleiben unangetastet',
+            ]),
+        ]));
+    }
+
+    if (missing.length > 0) {
+        const open = missing.filter(k => !(imp.fills[k] || ''));
+        body.appendChild(el('div', 'import-issue-label', [
+            open.length + ' von ' + missing.length + ' Keys ohne Wert in dieser Datei',
+        ]));
+
+        const list = el('div', 'import-fill-list', []);
+        for (const key of missing) {
+            const input = el('input', 'add-input');
+            input.type = 'text';
+            input.placeholder = 'Wert nachtragen (optional)';
+            input.value = imp.fills[key] || '';
+            input.dataset.focusKey = 'envfill-' + key;
+            input.oninput = (e) => { imp.fills[key] = e.target.value; };
+            input.onblur = () => render();
+
+            list.appendChild(el('div', 'import-fill-row', [
+                el('span', 'import-fill-key', [key]),
+                input,
+            ]));
+        }
+        body.appendChild(list);
+    }
+
+    if (unknown.length > 0) {
+        body.appendChild(el('div', 'import-issue-label', [
+            unknown.length + (unknown.length === 1
+                ? ' Key aus der Datei fehlt im Vault'
+                : ' Keys aus der Datei fehlen im Vault'),
+        ]));
+
+        const list = el('div', 'import-adopt-list', []);
+        for (const key of unknown) {
+            const checked = !!imp.adopt[key];
+            list.appendChild(el('div', 'import-adopt-row', [
+                button('row-check' + (checked ? ' is-checked' : ''), [icon('check', 11)], () => {
+                    imp.adopt[key] = !checked;
+                    render();
+                }, 'Key im Vault anlegen'),
+                el('span', 'import-fill-key', [key]),
+                el('span', 'import-adopt-hint', [
+                    checked ? 'wird angelegt' : 'wird verworfen',
+                ]),
+            ]));
+        }
+        body.appendChild(list);
+    }
+
+    if (missing.length === 0 && unknown.length === 0 && conflicts.length === 0) {
+        body.appendChild(el('div', 'import-ok', [
+            icon('check', 14),
+            'Die Datei passt genau zu den Keys dieses Vaults.',
+        ]));
+    }
+
+    const apply = async () => {
+        const values = buildEnvImportValues(imp);
+        if (Object.keys(values).length === 0) {
+            toast('Es bleibt nichts zu übernehmen.', 'error');
+            return;
+        }
+
+        imp.busy = true;
+        render();
+        try {
+            const updated = await ApplyEnvValues(
+                imp.vaultId, imp.env, values, adoptedKeys(imp));
+            state.vaults = state.vaults.map(v => (v.id === updated.id ? updated : v));
+            state.activeVaultId = updated.id;
+            state.envImport = null;
+            toast(Object.keys(values).length + ' Werte in ' + ENV_LABEL[imp.env] + ' übernommen', 'success');
+        } catch (err) {
+            toast('Übernehmen fehlgeschlagen: ' + describeError(err), 'error');
+        } finally {
+            imp.busy = false;
+            render();
+        }
+    };
+
+    return modalShell('modal-wide', [
+        el('div', 'modal-title', [ENV_LABEL[imp.env] + '-Werte importieren']),
+        el('div', 'modal-desc', [
+            'Ziel: „' + imp.vaultName + '“. Die Keys des Vaults geben die Struktur vor; verglichen wird nach Namen, nicht nach Reihenfolge.',
+        ]),
+        body,
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Abbrechen'], close),
+            button('btn btn-primary', [imp.busy ? 'Übernehme …' : 'Übernehmen'], apply),
+        ]),
+    ], close);
+}
+
+/* ==========================================================================
    Backup und Wiederherstellung
    ========================================================================== */
 
@@ -2083,6 +2313,7 @@ function render() {
 
     if (state.vaultModal) app.appendChild(renderVaultModal());
     if (state.importReview) app.appendChild(renderImportReview());
+    if (state.envImport) app.appendChild(renderEnvImportReview());
     if (state.backupModal) app.appendChild(renderBackupModal());
     if (state.convertModal) app.appendChild(renderConvertModal());
     if (state.duplicateModal) app.appendChild(renderDuplicateModal());
@@ -2137,6 +2368,7 @@ document.addEventListener('keydown', (e) => {
         if (state.duplicateModal) { state.duplicateModal = null; render(); return; }
         if (state.convertModal) { state.convertModal = null; render(); return; }
         if (state.backupModal) { state.backupModal = null; render(); return; }
+        if (state.envImport) { state.envImport = null; render(); return; }
         if (state.importReview) { state.importReview = null; render(); return; }
         if (state.vaultModal) { state.vaultModal = null; render(); return; }
         if (state.editing) { state.editing = null; render(); return; }

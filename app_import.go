@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -188,4 +189,156 @@ func (a *App) ChooseEnvFile(title string) (*PickedFile, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return &PickedFile{Path: path, Name: filepath.Base(path), Content: string(data)}, nil
+}
+
+// --- Nachträglicher Import in einen bestehenden Vault ---------------------
+
+// VaultEnvAnalysis checks one env file against a vault that already exists.
+//
+// Here the vault itself is the structure, not a .env.example: the user is
+// filling in an environment they did not have values for yet.
+type VaultEnvAnalysis struct {
+	// Values holds the non-empty assignments read from the file.
+	Values map[string]string `json:"values"`
+	// Missing lists vault keys the file supplies no value for.
+	Missing []string `json:"missing"`
+	// Unknown lists keys the file supplies that the vault does not have.
+	Unknown []string `json:"unknown"`
+	// Overwrite lists keys where the target environment already holds a value
+	// that this file would replace.
+	Overwrite []string `json:"overwrite"`
+}
+
+// envField maps an environment name to the field it fills.
+func envField(name string) (func(*vault.Entry) *string, error) {
+	switch name {
+	case "dev":
+		return func(e *vault.Entry) *string { return &e.ValueDev }, nil
+	case "staging":
+		return func(e *vault.Entry) *string { return &e.ValueStage }, nil
+	case "prod":
+		return func(e *vault.Entry) *string { return &e.ValueProd }, nil
+	default:
+		return nil, fmt.Errorf("unknown environment %q", name)
+	}
+}
+
+// AnalyseEnvForVault reports what importing text into one environment of an
+// existing vault would do.
+func (a *App) AnalyseEnvForVault(vaultID, envName, text string) (*VaultEnvAnalysis, error) {
+	field, err := envField(envName)
+	if err != nil {
+		return nil, err
+	}
+
+	v, ok := a.vaults.GetVault(vaultID)
+	if !ok {
+		return nil, fmt.Errorf("vault not found")
+	}
+
+	pairs, err := envfile.ParseString(text)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if len(pairs) == 0 {
+		return nil, fmt.Errorf("the file contains no KEY=VALUE lines")
+	}
+
+	keys := make([]string, 0, len(v.Entries))
+	current := make(map[string]string, len(v.Entries))
+	for i := range v.Entries {
+		e := &v.Entries[i]
+		keys = append(keys, e.Key)
+		current[e.Key] = *field(e)
+	}
+
+	report := envfile.Validate(keys, pairs)
+	values := envfile.Values(pairs)
+
+	analysis := &VaultEnvAnalysis{
+		Values:  values,
+		Missing: report.Missing,
+		Unknown: report.Unknown,
+	}
+	for _, k := range keys {
+		if values[k] != "" && current[k] != "" {
+			analysis.Overwrite = append(analysis.Overwrite, k)
+		}
+	}
+	sort.Strings(analysis.Overwrite)
+
+	return analysis, nil
+}
+
+// ApplyEnvValues writes values into one environment of an existing vault.
+//
+// Only the values handed in are written; an empty one is skipped rather than
+// clearing what is already stored, since importing a file is meant to add
+// values, not to erase them. Keys listed in addKeys are created first and
+// inherit the prefix of a matching existing group.
+func (a *App) ApplyEnvValues(vaultID, envName string, values map[string]string, addKeys []string) (*vault.Vault, error) {
+	field, err := envField(envName)
+	if err != nil {
+		return nil, err
+	}
+
+	v, ok := a.vaults.GetVault(vaultID)
+	if !ok {
+		return nil, fmt.Errorf("vault not found")
+	}
+
+	existing := make(map[string]bool, len(v.Entries))
+	for _, e := range v.Entries {
+		existing[e.Key] = true
+	}
+
+	for _, key := range addKeys {
+		key = strings.TrimSpace(key)
+		if key == "" || existing[key] {
+			continue
+		}
+		existing[key] = true
+		v.Entries = append(v.Entries, vault.Entry{
+			Key:         key,
+			GroupPrefix: prefixForKey(v.Entries, key),
+			Type:        vault.EntryTypeSecret,
+		})
+	}
+
+	applied := 0
+	for i := range v.Entries {
+		e := &v.Entries[i]
+		value, ok := values[e.Key]
+		if !ok || value == "" {
+			continue
+		}
+		*field(e) = value
+		applied++
+	}
+	if applied == 0 {
+		return nil, fmt.Errorf("no values to apply")
+	}
+
+	if err := a.UpdateVault(v); err != nil {
+		return nil, err
+	}
+
+	fresh, _ := a.vaults.GetVault(vaultID)
+	return fresh, nil
+}
+
+// prefixForKey gives a newly added key the group prefix of an existing group
+// it belongs to, so an imported key lands in the group it obviously belongs
+// to rather than sitting on its own.
+func prefixForKey(entries []vault.Entry, key string) string {
+	best := ""
+	for _, e := range entries {
+		if e.GroupPrefix == "" || !strings.HasPrefix(key, e.GroupPrefix) {
+			continue
+		}
+		if len(e.GroupPrefix) > len(best) {
+			best = e.GroupPrefix
+		}
+	}
+	return best
 }

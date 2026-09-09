@@ -1571,3 +1571,74 @@ textarea {
     color: var(--text-faint);
     line-height: 1.45;
 }
+
+/* --- Nachträglicher Wert-Import ---------------------------------------- */
+
+.env-import-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.env-import-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+/* Eine leere Umgebung ist der wahrscheinliche Grund fuer den Import, also
+   hebt sie sich ab. */
+.env-import-row.is-empty {
+    border-style: dashed;
+    border-color: var(--border-strong);
+}
+
+.env-import-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.env-import-label {
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}
+
+.env-import-meta {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 1px;
+}
+
+.env-import-row.is-empty .env-import-meta {
+    color: var(--env-staging);
+}
+
+.import-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 9px 11px;
+    background: var(--bg-surface-2);
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+}
+
+.import-summary-file {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 45%;
+}
+

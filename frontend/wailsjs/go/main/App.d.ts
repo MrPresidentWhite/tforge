@@ -3,7 +3,11 @@
 import {main} from '../models';
 import {vault} from '../models';
 
+export function AnalyseEnvForVault(arg1:string,arg2:string,arg3:string):Promise<main.VaultEnvAnalysis>;
+
 export function AnalyseEnvImport(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ImportAnalysis>;
+
+export function ApplyEnvValues(arg1:string,arg2:string,arg3:Record<string, string>,arg4:Array<string>):Promise<vault.Vault>;
 
 export function BackupVaults(arg1:string,arg2:string):Promise<string>;
 

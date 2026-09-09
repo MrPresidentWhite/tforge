@@ -230,6 +230,26 @@ kinds of mismatch are reported, because ignoring either loses data:
 
 Nothing is written until the review step is confirmed.
 
+### Adding values to an existing vault
+
+Values rarely arrive all at once. The **edit dialog** of a vault therefore
+offers the same import for a single environment: it lists `dev`, `staging` and
+`prod` with how many keys each already holds, so an environment that is still
+empty is obvious, and each can take a file of its own.
+
+Here the vault's own keys are the structure. The file is checked against them
+the same way, again by key rather than position, and the review step reports:
+
+- **keys the file does not cover**, fillable on the spot
+- **keys the file supplies that the vault does not have**, with the option to
+  create them — a new key joins the group its prefix already belongs to
+- **keys that already hold a value** in the target environment. These are left
+  alone unless overwriting is explicitly confirmed, so importing a partial file
+  can never quietly replace values that were already there.
+
+An empty value never clears an existing one: importing adds values, it does not
+erase them.
+
 ### Backup from the GUI
 
 The **Backup** button in the title bar offers the same encrypted backup and

@@ -194,3 +194,166 @@ func TestCreateVaultFromImportRollsBackWhenPersistFails(t *testing.T) {
 		t.Errorf("the failed import left %d vaults in memory", len(got))
 	}
 }
+
+// --- Nachträglicher Import in einen bestehenden Vault ---------------------
+
+func vaultWithDevValues(t *testing.T, app *App) *vault.Vault {
+	t.Helper()
+	v, err := app.CreateVaultFromImport("CineVault", "", "", []ImportEntry{
+		{Key: "POSTGRES_HOST", GroupPrefix: "POSTGRES_", ValueDev: "localhost"},
+		{Key: "POSTGRES_PORT", GroupPrefix: "POSTGRES_", ValueDev: "5432"},
+		{Key: "API_KEY", ValueDev: "dev-key"},
+	})
+	if err != nil {
+		t.Fatalf("seed vault: %v", err)
+	}
+	return v
+}
+
+func TestAnalyseEnvForVaultReportsAgainstTheVault(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	got, err := app.AnalyseEnvForVault(v.ID, "prod", "POSTGRES_HOST=db.internal\nEXTRA=surprise\n")
+	if err != nil {
+		t.Fatalf("AnalyseEnvForVault: %v", err)
+	}
+
+	if got.Values["POSTGRES_HOST"] != "db.internal" {
+		t.Errorf("values = %v", got.Values)
+	}
+	if !reflect.DeepEqual(got.Missing, []string{"API_KEY", "POSTGRES_PORT"}) {
+		t.Errorf("missing = %v, want the two keys the file omits", got.Missing)
+	}
+	if !reflect.DeepEqual(got.Unknown, []string{"EXTRA"}) {
+		t.Errorf("unknown = %v, want EXTRA", got.Unknown)
+	}
+	// prod is empty, so nothing is at risk of being replaced.
+	if len(got.Overwrite) != 0 {
+		t.Errorf("overwrite = %v, want none for an empty environment", got.Overwrite)
+	}
+}
+
+func TestAnalyseEnvForVaultFlagsOverwrites(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	got, err := app.AnalyseEnvForVault(v.ID, "dev", "POSTGRES_HOST=other\nPOSTGRES_PORT=5433\n")
+	if err != nil {
+		t.Fatalf("AnalyseEnvForVault: %v", err)
+	}
+
+	if !reflect.DeepEqual(got.Overwrite, []string{"POSTGRES_HOST", "POSTGRES_PORT"}) {
+		t.Errorf("overwrite = %v, want both keys that already hold a dev value", got.Overwrite)
+	}
+}
+
+func TestAnalyseEnvForVaultRejectsBadInput(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	if _, err := app.AnalyseEnvForVault(v.ID, "qa", "A=1\n"); err == nil {
+		t.Error("an unknown environment was accepted")
+	}
+	if _, err := app.AnalyseEnvForVault("no-such-vault", "dev", "A=1\n"); err == nil {
+		t.Error("a missing vault was accepted")
+	}
+	if _, err := app.AnalyseEnvForVault(v.ID, "dev", "# nothing here\n"); err == nil {
+		t.Error("a file without assignments was accepted")
+	}
+}
+
+func TestApplyEnvValuesFillsOneEnvironment(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	got, err := app.ApplyEnvValues(v.ID, "prod", map[string]string{
+		"POSTGRES_HOST": "db.internal",
+		"POSTGRES_PORT": "5432",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ApplyEnvValues: %v", err)
+	}
+
+	byKey := map[string]vault.Entry{}
+	for _, e := range got.Entries {
+		byKey[e.Key] = e
+	}
+
+	if byKey["POSTGRES_HOST"].ValueProd != "db.internal" {
+		t.Errorf("prod not written: %+v", byKey["POSTGRES_HOST"])
+	}
+	// The other environments must be untouched.
+	if byKey["POSTGRES_HOST"].ValueDev != "localhost" {
+		t.Errorf("dev was disturbed: %+v", byKey["POSTGRES_HOST"])
+	}
+	if byKey["API_KEY"].ValueProd != "" {
+		t.Errorf("a key the import did not mention got a value: %+v", byKey["API_KEY"])
+	}
+}
+
+func TestApplyEnvValuesSkipsEmptyValues(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	// An empty value must not clear what is already stored; importing adds
+	// values, it does not erase them.
+	got, err := app.ApplyEnvValues(v.ID, "dev", map[string]string{
+		"POSTGRES_HOST": "",
+		"POSTGRES_PORT": "5433",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ApplyEnvValues: %v", err)
+	}
+
+	for _, e := range got.Entries {
+		if e.Key == "POSTGRES_HOST" && e.ValueDev != "localhost" {
+			t.Errorf("an empty value cleared an existing one: %+v", e)
+		}
+		if e.Key == "POSTGRES_PORT" && e.ValueDev != "5433" {
+			t.Errorf("the non-empty value was not applied: %+v", e)
+		}
+	}
+}
+
+func TestApplyEnvValuesAddsNewKeysIntoTheMatchingGroup(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	got, err := app.ApplyEnvValues(v.ID, "prod",
+		map[string]string{"POSTGRES_PASSWORD": "hunter2", "STANDALONE": "x"},
+		[]string{"POSTGRES_PASSWORD", "STANDALONE"})
+	if err != nil {
+		t.Fatalf("ApplyEnvValues: %v", err)
+	}
+
+	byKey := map[string]vault.Entry{}
+	for _, e := range got.Entries {
+		byKey[e.Key] = e
+	}
+
+	if len(got.Entries) != 5 {
+		t.Fatalf("got %d entries, want 5", len(got.Entries))
+	}
+	if byKey["POSTGRES_PASSWORD"].GroupPrefix != "POSTGRES_" {
+		t.Errorf("a new key did not join its obvious group: %+v", byKey["POSTGRES_PASSWORD"])
+	}
+	if byKey["STANDALONE"].GroupPrefix != "" {
+		t.Errorf("a key matching no group was given one: %+v", byKey["STANDALONE"])
+	}
+	if byKey["POSTGRES_PASSWORD"].Type != vault.EntryTypeSecret {
+		t.Errorf("a new key should default to secret: %+v", byKey["POSTGRES_PASSWORD"])
+	}
+}
+
+func TestApplyEnvValuesRejectsNothingToDo(t *testing.T) {
+	app := newImportApp()
+	v := vaultWithDevValues(t, app)
+
+	if _, err := app.ApplyEnvValues(v.ID, "prod", map[string]string{}, nil); err == nil {
+		t.Error("an import with no values was accepted")
+	}
+	if _, err := app.ApplyEnvValues(v.ID, "nope", map[string]string{"A": "1"}, nil); err == nil {
+		t.Error("an unknown environment was accepted")
+	}
+}

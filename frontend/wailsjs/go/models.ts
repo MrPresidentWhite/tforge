@@ -122,6 +122,24 @@ export namespace main {
 	        this.skipped = source["skipped"];
 	    }
 	}
+	export class VaultEnvAnalysis {
+	    values: Record<string, string>;
+	    missing: string[];
+	    unknown: string[];
+	    overwrite: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new VaultEnvAnalysis(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.values = source["values"];
+	        this.missing = source["missing"];
+	        this.unknown = source["unknown"];
+	        this.overwrite = source["overwrite"];
+	    }
+	}
 
 }
 
