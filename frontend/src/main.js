@@ -125,7 +125,7 @@ const state = {
     // { index, field } mit field aus 'key' | 'dev' | 'staging' | 'prod' | 'type'
     editing: null,
 
-    addPanel: null,
+    addModal: null,
     vaultModal: null,
     importReview: null,
     envImport: null,
@@ -395,7 +395,7 @@ function renderSidebar() {
                 state.activeVaultId = vault.id;
                 clearSelection();
                 state.editing = null;
-                state.addPanel = null;
+                state.addModal = null;
                 state.revealedRows = new Set();
                 render();
             };
@@ -551,7 +551,7 @@ function renderMain() {
                 el('div', 'empty-text', [
                     'Lege einzelne Keys an oder gleich eine ganze Gruppe mit gemeinsamem Prefix, etwa POSTGRES_ mit HOST, PORT und PASSWORD.',
                 ]),
-                button('btn btn-primary', [icon('plus', 15), 'Key hinzufügen'], () => openAddPanel('single')),
+                button('btn btn-primary', [icon('plus', 15), 'Key hinzufügen'], () => openAddModal('single')),
             ]),
         ]));
     } else if (shownCount === 0) {
@@ -568,10 +568,6 @@ function renderMain() {
         ]));
     } else {
         scroll.appendChild(renderKeyTable(groups));
-    }
-
-    if (state.addPanel) {
-        scroll.appendChild(renderAddPanel(vault));
     }
 
     main.appendChild(scroll);
@@ -628,8 +624,8 @@ function renderToolbar() {
     return el('div', 'main-toolbar', [
         filter,
         el('div', 'toolbar-spacer'),
-        button('btn btn-ghost btn-sm', [icon('layers', 14), 'Gruppe'], () => openAddPanel('group')),
-        button('btn btn-primary btn-sm', [icon('plus', 14), 'Key'], () => openAddPanel('single')),
+        button('btn btn-ghost btn-sm', [icon('layers', 14), 'Gruppe'], () => openAddModal('group')),
+        button('btn btn-primary btn-sm', [icon('plus', 14), 'Key'], () => openAddModal('single')),
     ]);
 }
 
@@ -1039,17 +1035,26 @@ function openRowMenu(x, y) {
    Panel: neue Keys anlegen
    ========================================================================== */
 
-function openAddPanel(mode) {
+/* ==========================================================================
+   Keys hinzufügen
+   ========================================================================== */
+
+function emptyDraftRow() {
+    return { key: '', dev: '', staging: '', prod: '' };
+}
+
+function openAddModal(mode) {
     const vault = activeVault();
     if (!vault) return;
 
     const prefixes = existingPrefixes(vault);
-    state.addPanel = {
+    state.addModal = {
         mode,
         prefix: mode === 'group' ? (prefixes[0] || '') : '',
         customPrefix: prefixes.length === 0,
-        keys: [''],
-        focusIndex: 0,
+        rows: [emptyDraftRow()],
+        focusRow: 0,
+        busy: false,
     };
     render();
 }
@@ -1062,191 +1067,298 @@ function existingPrefixes(vault) {
     return seen;
 }
 
-function renderAddPanel(vault) {
-    const panel = state.addPanel;
-    const prefixes = existingPrefixes(vault);
-    const wrap = el('div', 'add-panel', []);
+// draftKey builds the final key name of a row.
+function draftKey(m, row) {
+    const name = (row.key || '').trim();
+    if (!name) return '';
+    return m.mode === 'group' ? (m.prefix || '').trim() + name : name;
+}
 
-    // Modus-Umschalter
+function renderAddModal() {
+    const m = state.addModal;
+    const vault = activeVault();
+    if (!vault) {
+        state.addModal = null;
+        return el('div', null, []);
+    }
+
+    const close = () => { state.addModal = null; render(); };
+    const prefixes = existingPrefixes(vault);
+    const taken = new Set((vault.entries || []).map(e => e.key));
+
+    const addRow = (focus = true) => {
+        m.rows.push(emptyDraftRow());
+        if (focus) m.focusRow = m.rows.length - 1;
+        render();
+    };
+
+    // --- Modus ---
     const segmented = el('div', 'segmented', [
-        button('segmented-btn' + (panel.mode === 'single' ? ' is-active' : ''), ['Einzelne Keys'], () => {
-            state.addPanel = { ...panel, mode: 'single' };
+        button('segmented-btn' + (m.mode === 'single' ? ' is-active' : ''), ['Einzelne Keys'], () => {
+            m.mode = 'single';
             render();
         }),
-        button('segmented-btn' + (panel.mode === 'group' ? ' is-active' : ''), ['Gruppe'], () => {
-            state.addPanel = { ...panel, mode: 'group', prefix: panel.prefix || prefixes[0] || '', customPrefix: prefixes.length === 0 };
+        button('segmented-btn' + (m.mode === 'group' ? ' is-active' : ''), ['Gruppe'], () => {
+            m.mode = 'group';
+            if (!m.prefix) m.prefix = prefixes[0] || '';
+            m.customPrefix = prefixes.length === 0;
             render();
         }),
     ]);
 
-    wrap.appendChild(el('div', 'add-panel-head', [
-        segmented,
-        el('div', 'toolbar-spacer'),
-        iconButton('btn-icon', 'x', () => {
-            state.addPanel = null;
-            render();
-        }, 'Schließen', 15),
-    ]));
+    // --- Gruppen-Prefix ---
+    let prefixField = null;
+    if (m.mode === 'group') {
+        const inner = el('div', 'add-prefix-field', []);
 
-    const body = el('div', 'add-panel-body', []);
-
-    // Gruppen-Prefix
-    if (panel.mode === 'group') {
-        const prefixWrap = el('div', null, [el('div', 'add-field-label', ['Gruppen-Prefix'])]);
-
-        if (prefixes.length > 0 && !panel.customPrefix) {
-            const row = el('div', 'add-key-row', []);
-            const select = el('select', 'select');
-            select.style.height = '32px';
-            select.style.flex = '1';
+        if (prefixes.length > 0 && !m.customPrefix) {
+            const select = el('select', 'select add-prefix-select');
             for (const p of prefixes) {
                 const opt = el('option', null, [p]);
                 opt.value = p;
-                if (p === panel.prefix) opt.selected = true;
+                if (p === m.prefix) opt.selected = true;
                 select.appendChild(opt);
             }
-            const customOpt = el('option', null, ['Neues Prefix …']);
-            customOpt.value = '';
-            select.appendChild(customOpt);
+            const custom = el('option', null, ['Neues Prefix …']);
+            custom.value = '';
+            select.appendChild(custom);
             const customIndex = select.options.length - 1;
+
             select.onchange = () => {
                 if (select.selectedIndex === customIndex) {
-                    state.addPanel = { ...panel, customPrefix: true, prefix: '' };
+                    m.customPrefix = true;
+                    m.prefix = '';
                 } else {
-                    state.addPanel = { ...panel, prefix: select.value };
+                    m.prefix = select.value;
                 }
                 render();
             };
-            row.appendChild(select);
-            prefixWrap.appendChild(row);
+            inner.appendChild(select);
         } else {
             const input = el('input', 'add-input');
             input.type = 'text';
             input.placeholder = 'z. B. POSTGRES_';
-            input.value = panel.prefix;
+            input.value = m.prefix;
             input.dataset.focusKey = 'add-prefix';
-            input.oninput = (e) => { panel.prefix = e.target.value; };
-            prefixWrap.appendChild(input);
+            input.oninput = (e) => { m.prefix = e.target.value; };
+            input.onblur = () => render();
+            inner.appendChild(input);
+
+            if (prefixes.length > 0) {
+                inner.appendChild(button('btn btn-ghost btn-sm', ['Vorhandene'], () => {
+                    m.customPrefix = false;
+                    m.prefix = prefixes[0];
+                    render();
+                }));
+            }
         }
-        body.appendChild(prefixWrap);
+
+        prefixField = el('div', 'modal-field', [
+            el('label', 'modal-label', ['Gruppen-Prefix']),
+            inner,
+        ]);
     }
 
-    // Key-Zeilen
-    const keysWrap = el('div', null, [
-        el('div', 'add-field-label', [panel.mode === 'group' ? 'Keys in der Gruppe' : 'Keys']),
-    ]);
+    // --- Tabelle ---
+    const table = el('div', 'draft-table', []);
 
-    panel.keys.forEach((value, i) => {
-        const row = el('div', 'add-key-row', []);
-        if (panel.mode === 'group' && panel.prefix) {
-            row.appendChild(el('div', 'add-prefix-tag', [panel.prefix]));
+    const head = el('div', 'draft-row draft-row-head', []);
+    head.appendChild(el('div', null, ['Key']));
+    for (const env of ENVS) {
+        head.appendChild(el('div', 'col-head for-' + env, [ENV_LABEL[env]]));
+    }
+    head.appendChild(el('div', null, ['']));
+    table.appendChild(head);
+
+    // Tippen soll sofort Rueckmeldung geben, ohne den kompletten Baum hinter
+    // dem Dialog neu zu bauen. Diese Felder werden daher gezielt aktualisiert.
+    const keyInputs = [];
+
+    m.rows.forEach((row, i) => {
+        const line = el('div', 'draft-row', []);
+
+        // Key
+        const keyCell = el('div', 'draft-cell draft-cell-key', []);
+        if (m.mode === 'group' && (m.prefix || '').trim()) {
+            keyCell.appendChild(el('span', 'draft-prefix', [m.prefix.trim()]));
         }
-
-        const input = el('input', 'add-input');
-        input.type = 'text';
-        input.placeholder = panel.mode === 'group' ? 'HOST' : 'NEXT_PUBLIC_API_URL';
-        input.value = value;
-        input.dataset.focusKey = `add-key-${i}`;
-        input.oninput = (e) => { panel.keys[i] = e.target.value; };
-        input.onkeydown = (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (e.shiftKey || i === panel.keys.length - 1) {
-                    panel.keys.push('');
-                    panel.focusIndex = panel.keys.length - 1;
-                    render();
-                } else {
-                    submitAddPanel();
-                }
-            }
+        const keyInput = el('input', 'add-input');
+        keyInput.type = 'text';
+        keyInput.placeholder = m.mode === 'group' ? 'HOST' : 'API_KEY';
+        keyInput.value = row.key;
+        keyInput.dataset.focusKey = 'draft-key-' + i;
+        keyInput.oninput = (e) => {
+            row.key = e.target.value;
+            refresh();
         };
-        row.appendChild(input);
+        keyInputs.push({ row, input: keyInput });
+        keyCell.appendChild(keyInput);
+        line.appendChild(keyCell);
 
-        if (panel.keys.length > 1) {
-            row.appendChild(iconButton('btn-icon', 'x', () => {
-                panel.keys.splice(i, 1);
-                render();
-            }, 'Zeile entfernen', 14));
+        // Werte je Umgebung
+        for (const env of ENVS) {
+            const input = el('input', 'add-input for-' + env);
+            input.type = 'text';
+            input.placeholder = '–';
+            input.value = row[env];
+            input.dataset.focusKey = 'draft-' + env + '-' + i;
+            input.oninput = (e) => { row[env] = e.target.value; };
+            input.onkeydown = (e) => rowKeydown(e, m, i, addRow);
+
+            const cell = el('div', 'draft-cell', [input]);
+            cell.dataset.env = env;
+            line.appendChild(cell);
         }
-        keysWrap.appendChild(row);
+
+        keyInput.onkeydown = (e) => rowKeydown(e, m, i, addRow);
+
+        // Zeile entfernen
+        line.appendChild(el('div', 'draft-cell draft-cell-actions', [
+            m.rows.length > 1
+                ? iconButton('btn-icon', 'x', () => {
+                    m.rows.splice(i, 1);
+                    render();
+                }, 'Zeile entfernen', 14)
+                : el('span', null, []),
+        ]));
+
+        table.appendChild(line);
     });
 
-    keysWrap.appendChild(button('btn btn-ghost btn-sm', [icon('plus', 13), 'Weitere Zeile'], () => {
-        panel.keys.push('');
-        panel.focusIndex = panel.keys.length - 1;
-        render();
-    }));
+    // --- Zusammenfassung und Absenden ---
 
-    body.appendChild(keysWrap);
-    wrap.appendChild(body);
-
-    wrap.appendChild(el('div', 'add-panel-foot', [
-        button('btn btn-primary btn-sm', ['Anlegen'], submitAddPanel),
-        button('btn btn-ghost btn-sm', ['Abbrechen'], () => {
-            state.addPanel = null;
-            render();
-        }),
-        el('span', 'add-hint', ['Enter fügt eine weitere Zeile hinzu']),
-    ]));
-
-    return wrap;
-}
-
-async function submitAddPanel() {
-    const panel = state.addPanel;
-    if (!panel) return;
-
-    const prefix = panel.mode === 'group' ? panel.prefix.trim() : '';
-    if (panel.mode === 'group' && !prefix) {
-        toast('Bitte ein Gruppen-Prefix angeben.', 'error');
-        return;
-    }
-
-    const names = panel.keys.map(k => k.trim()).filter(Boolean);
-    if (names.length === 0) {
-        toast('Bitte mindestens einen Key angeben.', 'error');
-        return;
-    }
-
-    const vault = activeVault();
-    const existingKeys = new Set((vault.entries || []).map(e => e.key));
-    const additions = [];
-    const duplicates = [];
-
-    for (const name of names) {
-        const fullKey = prefix + name;
-        if (existingKeys.has(fullKey)) {
-            duplicates.push(fullKey);
-            continue;
+    // plan() ist die einzige Stelle, die entscheidet was angelegt wird;
+    // Anzeige und Absenden lesen beide von hier.
+    function plan() {
+        const planned = [];
+        const duplicates = [];
+        const seen = new Set();
+        for (const row of m.rows) {
+            const key = draftKey(m, row);
+            if (!key) continue;
+            if (taken.has(key) || seen.has(key)) {
+                duplicates.push({ row, key });
+                continue;
+            }
+            seen.add(key);
+            planned.push({ row, key });
         }
-        existingKeys.add(fullKey);
-        additions.push({
-            key: fullKey,
-            valueDev: '',
-            valueStage: '',
-            valueProd: '',
+        return { planned, duplicates };
+    }
+
+    const submit = async () => {
+        if (m.mode === 'group' && !(m.prefix || '').trim()) {
+            toast('Bitte ein Gruppen-Prefix angeben.', 'error');
+            return;
+        }
+        const { planned, duplicates } = plan();
+        if (planned.length === 0) {
+            toast(duplicates.length > 0
+                ? 'Alle angegebenen Keys gibt es schon.'
+                : 'Bitte mindestens einen Key angeben.', 'error');
+            return;
+        }
+
+        const prefix = m.mode === 'group' ? m.prefix.trim() : '';
+        const additions = planned.map(({ row, key }) => ({
+            key,
+            valueDev: row.dev,
+            valueStage: row.staging,
+            valueProd: row.prod,
             type: 'secret',
             groupPrefix: prefix,
-        });
+        }));
+
+        m.busy = true;
+        render();
+
+        const ok = await mutateEntries(
+            entries => [...entries, ...additions],
+            additions.length + (additions.length === 1 ? ' Key angelegt' : ' Keys angelegt'),
+        );
+
+        m.busy = false;
+        if (ok) {
+            if (duplicates.length > 0) {
+                toast('Übersprungen, weil schon vorhanden: '
+                    + duplicates.map(d => d.key).join(', '), 'error');
+            }
+            state.addModal = null;
+        }
+        render();
+    };
+
+    const submitBtn = button('btn btn-primary', ['Anlegen'], submit);
+    const warning = el('span', 'draft-warning', []);
+
+    function submitLabel(count) {
+        if (m.busy) return 'Lege an \u2026';
+        if (count === 0) return 'Anlegen';
+        if (count === 1) return '1 Key anlegen';
+        return count + ' Keys anlegen';
     }
 
-    if (additions.length === 0) {
-        toast(`Bereits vorhanden: ${duplicates.join(', ')}`, 'error');
+    function duplicateNote(count) {
+        if (count === 0) return '';
+        if (count === 1) return '1 Key gibt es schon und wird übersprungen';
+        return count + ' Keys gibt es schon und werden übersprungen';
+    }
+
+    function refresh() {
+        const { planned, duplicates } = plan();
+        const clashing = new Set(duplicates.map(d => d.key));
+
+        for (const entry of keyInputs) {
+            const key = draftKey(m, entry.row);
+            const clash = !!key && clashing.has(key);
+            entry.input.classList.toggle('is-duplicate', clash);
+            entry.input.title = clash ? key + ' gibt es in diesem Vault schon' : '';
+        }
+
+        submitBtn.replaceChildren(document.createTextNode(submitLabel(planned.length)));
+        warning.textContent = duplicateNote(duplicates.length);
+    }
+
+    refresh();
+
+    return modalShell('modal-wide', [
+        el('div', 'modal-title', ['Keys hinzufügen']),
+        el('div', 'modal-desc', [
+            'Werte lassen sich gleich hier eintragen – leere Felder bleiben einfach leer und können später ergänzt werden.',
+        ]),
+        el('div', 'modal-field', [segmented]),
+        prefixField,
+        table,
+        el('div', 'draft-foot', [
+            button('btn btn-ghost btn-sm', [icon('plus', 13), 'Weitere Zeile'], () => addRow()),
+            warning,
+            el('span', 'add-hint', ['Enter für eine weitere Zeile, Tab zum nächsten Feld']),
+        ]),
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Abbrechen'], close),
+            submitBtn,
+        ]),
+    ], close);
+}
+
+// rowKeydown keeps the keyboard doing the obvious thing: Enter opens the next
+// row, Ctrl+Enter submits without reaching for the mouse.
+function rowKeydown(e, m, index, addRow) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+
+    if (e.ctrlKey || e.metaKey) {
+        const submitBtn = document.querySelector('.modal-actions .btn-primary');
+        if (submitBtn) submitBtn.click();
         return;
     }
 
-    const ok = await mutateEntries(
-        entries => [...entries, ...additions],
-        `${additions.length} ${additions.length === 1 ? 'Key' : 'Keys'} angelegt`
-    );
-
-    if (ok) {
-        if (duplicates.length > 0) {
-            toast(`Übersprungen, weil schon vorhanden: ${duplicates.join(', ')}`, 'error');
-        }
-        state.addPanel = null;
+    if (index === m.rows.length - 1) {
+        addRow();
+    } else {
+        m.focusRow = index + 1;
+        render();
     }
-    render();
 }
 
 /* ==========================================================================
@@ -2290,9 +2402,9 @@ function restoreUiState(snapshot) {
             : `${state.editing.field}-${state.editing.index}`;
         target = document.querySelector(`[data-focus-key="${key}"]`);
     }
-    if (!target && state.addPanel && typeof state.addPanel.focusIndex === 'number') {
-        target = document.querySelector(`[data-focus-key="add-key-${state.addPanel.focusIndex}"]`);
-        state.addPanel.focusIndex = null;
+    if (!target && state.addModal && typeof state.addModal.focusRow === 'number') {
+        target = document.querySelector(`[data-focus-key="draft-key-${state.addModal.focusRow}"]`);
+        state.addModal.focusRow = null;
     }
     if (!target && snapshot.focusKey) {
         target = document.querySelector(`[data-focus-key="${snapshot.focusKey}"]`);
@@ -2324,6 +2436,7 @@ function render() {
     shell.appendChild(el('div', 'app-body', [renderSidebar(), renderMain()]));
     app.appendChild(shell);
 
+    if (state.addModal) app.appendChild(renderAddModal());
     if (state.vaultModal) app.appendChild(renderVaultModal());
     if (state.importReview) app.appendChild(renderImportReview());
     if (state.envImport) app.appendChild(renderEnvImportReview());
@@ -2385,7 +2498,7 @@ document.addEventListener('keydown', (e) => {
         if (state.importReview) { state.importReview = null; render(); return; }
         if (state.vaultModal) { state.vaultModal = null; render(); return; }
         if (state.editing) { state.editing = null; render(); return; }
-        if (state.addPanel) { state.addPanel = null; render(); return; }
+        if (state.addModal) { state.addModal = null; render(); return; }
         if (state.selected.size > 0) { clearSelection(); render(); return; }
         if (state.search) { state.search = ''; render(); }
         return;
@@ -2409,7 +2522,7 @@ document.addEventListener('keydown', (e) => {
 
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        if (activeVault()) openAddPanel('single');
+        if (activeVault()) openAddModal('single');
     }
 });
 
