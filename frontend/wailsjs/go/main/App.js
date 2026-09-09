@@ -26,6 +26,10 @@ export function ListVaults() {
   return window['go']['main']['App']['ListVaults']();
 }
 
+export function StartupError() {
+  return window['go']['main']['App']['StartupError']();
+}
+
 export function UpdateVault(arg1) {
   return window['go']['main']['App']['UpdateVault'](arg1);
 }

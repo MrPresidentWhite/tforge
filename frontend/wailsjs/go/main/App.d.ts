@@ -14,4 +14,6 @@ export function Greet(arg1:string):Promise<string>;
 
 export function ListVaults():Promise<Array<vault.Vault>>;
 
+export function StartupError():Promise<string>;
+
 export function UpdateVault(arg1:vault.Vault):Promise<void>;

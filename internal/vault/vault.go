@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -38,6 +39,18 @@ type Service struct {
 	vaults map[string]*Vault
 }
 
+// clone returns a deep copy of v. Copying the struct alone is not enough:
+// Entries is a slice, so a plain struct copy would still share the backing
+// array and let callers mutate stored entries in place.
+func clone(v *Vault) *Vault {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	copied.Entries = append([]Entry(nil), v.Entries...)
+	return &copied
+}
+
 func NewService() *Service {
 	return &Service{
 		vaults: make(map[string]*Vault),
@@ -50,10 +63,16 @@ func (s *Service) ListVaults() []*Vault {
 
 	result := make([]*Vault, 0, len(s.vaults))
 	for _, v := range s.vaults {
-		// return shallow copies to avoid external mutation
-		copyVault := *v
-		result = append(result, &copyVault)
+		result = append(result, clone(v))
 	}
+	// Stable ordering keeps CLI output and the GUI list deterministic; map
+	// iteration order in Go is deliberately randomised.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].ID < result[j].ID
+	})
 	return result
 }
 
@@ -67,9 +86,23 @@ func (s *Service) SetAll(vaults []*Vault) {
 		if v == nil || v.ID == "" {
 			continue
 		}
-		copyVault := *v
-		s.vaults[v.ID] = &copyVault
+		s.vaults[v.ID] = clone(v)
 	}
+}
+
+// RestoreVault re-inserts a previously removed or modified vault, keeping its
+// original ID. It is used to roll back an in-memory change when persisting it
+// to disk failed.
+func (s *Service) RestoreVault(v *Vault) bool {
+	if v == nil || v.ID == "" {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.vaults[v.ID] = clone(v)
+	return true
 }
 
 func (s *Service) CreateVault(name, description string) *Vault {
@@ -95,8 +128,7 @@ func (s *Service) GetVault(id string) (*Vault, bool) {
 	if !ok {
 		return nil, false
 	}
-	copyVault := *v
-	return &copyVault, true
+	return clone(v), true
 }
 
 func (s *Service) UpdateVault(updated *Vault) bool {
@@ -131,4 +163,3 @@ func (s *Service) DeleteVault(id string) bool {
 	delete(s.vaults, id)
 	return true
 }
-
