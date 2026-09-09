@@ -5,25 +5,43 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+	"time"
 
 	"tforge/internal/secure"
 	"tforge/internal/storage"
 	"tforge/internal/vault"
 )
 
+// agentBaseURL is where the local tforge-agent listens. The agent binds to
+// loopback only, so this is not configurable on either side.
+const agentBaseURL = "http://127.0.0.1:5959"
+
+// agentClient talks to the local agent. A timeout matters even on loopback:
+// an unlock request can sit waiting for a Windows Hello prompt the user never
+// answers, and without this the CLI would hang forever.
+var agentClient = &http.Client{Timeout: 2 * time.Minute}
+
 type envResponse struct {
 	Env map[string]string `json:"env"`
+}
+
+type statusResponse struct {
+	Locked         bool  `json:"locked"`
+	TimeoutSeconds int64 `json:"timeoutSeconds"`
 }
 
 func main() {
 	envFlag := flag.String("env", "dev", "environment to use (dev|staging|prod)")
 	exportMode := flag.Bool("export", false, "print env as KEY=VALUE lines instead of running a command")
+	exportFormat := flag.String("export-format", "raw", "how --export quotes values (raw|shell); use shell for `eval $(tforge --export ...)`")
 
 	createVault := flag.String("create-vault", "", "create a new vault by importing from an env file")
 	duplicateTo := flag.String("duplicate-to", "", "duplicate imported dev values to another environment (staging|prod)")
@@ -75,15 +93,23 @@ func main() {
 		log.Fatalf("no command specified (or use --export)")
 	}
 
+	// Ensure the agent is unlocked (may trigger an OS re-auth prompt on
+	// supported platforms) before requesting env data.
+	if err := ensureAgentUnlocked(); err != nil {
+		log.Fatalf("unlock agent: %v", err)
+	}
+
 	envMap, err := fetchEnvFromAgent(vaultRef, *envFlag)
 	if err != nil {
 		log.Fatalf("fetch env from agent: %v", err)
 	}
 
 	if *exportMode {
-		for k, v := range envMap {
-			fmt.Printf("%s=%s\n", k, v)
+		out, err := formatExport(envMap, *exportFormat)
+		if err != nil {
+			log.Fatalf("export: %v", err)
 		}
+		fmt.Print(out)
 		return
 	}
 
@@ -114,14 +140,7 @@ func fetchEnvFromAgent(vaultRef, env string) (map[string]string, error) {
 	q := url.Values{}
 	q.Set("vault", vaultRef)
 	q.Set("env", env)
-	u := url.URL{
-		Scheme:   "http",
-		Host:     "127.0.0.1:5959",
-		Path:     "/env",
-		RawQuery: q.Encode(),
-	}
-
-	resp, err := http.Get(u.String())
+	resp, err := agentClient.Get(agentBaseURL + "/env?" + q.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("connect agent: %w", err)
 	}
@@ -159,6 +178,14 @@ func importEnvFileAsVault(name, duplicateTo, filePath, entryType string) error {
 		return fmt.Errorf("unsupported --type %q (use secrets|env|note)", entryType)
 	}
 
+	// Reject an unknown --duplicate-to before doing any work, so the user is
+	// not told about it only after the file has been read.
+	switch strings.ToLower(duplicateTo) {
+	case "", "prod", "production", "staging", "stage":
+	default:
+		return fmt.Errorf("unsupported --duplicate-to %q (use staging|prod)", duplicateTo)
+	}
+
 	// Parse the env-style file.
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -166,46 +193,27 @@ func importEnvFileAsVault(name, duplicateTo, filePath, entryType string) error {
 	}
 	defer f.Close()
 
-	entries := make([]vault.Entry, 0)
+	pairs, err := parseEnvFile(f)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Very simple KEY=VALUE parsing; no escaping for now.
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := parts[1]
-		if key == "" {
-			continue
-		}
-
+	entries := make([]vault.Entry, 0, len(pairs))
+	for _, kv := range pairs {
 		e := vault.Entry{
-			Key:      key,
-			ValueDev: value,
+			Key:      kv.Key,
+			ValueDev: kv.Value,
 			Type:     et,
 		}
 
 		switch strings.ToLower(duplicateTo) {
 		case "prod", "production":
-			e.ValueProd = value
+			e.ValueProd = kv.Value
 		case "staging", "stage":
-			e.ValueStage = value
-		case "":
-			// no duplication
-		default:
-			return fmt.Errorf("unsupported --duplicate-to %q (use staging|prod)", duplicateTo)
+			e.ValueStage = kv.Value
 		}
 
 		entries = append(entries, e)
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read file: %w", err)
 	}
 
 	// Initialise storage/protector and persist the new vault.
@@ -229,6 +237,14 @@ func importEnvFileAsVault(name, duplicateTo, filePath, entryType string) error {
 		svc.SetAll(existing)
 	}
 
+	// The agent resolves a vault reference by ID *or* name and takes the first
+	// match, so two vaults sharing a name make `tforge @Name` ambiguous.
+	for _, ev := range existing {
+		if ev != nil && ev.Name == name {
+			return fmt.Errorf("a vault named %q already exists (ID %s); pick another name", name, ev.ID)
+		}
+	}
+
 	v := svc.CreateVault(name, "")
 	v.Entries = entries
 	// Persist back to disk.
@@ -245,11 +261,11 @@ func importEnvFileAsVault(name, duplicateTo, filePath, entryType string) error {
 }
 
 func triggerAgentReload() error {
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:5959/reload", nil)
+	req, err := http.NewRequest(http.MethodPost, agentBaseURL+"/reload", nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := agentClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -258,6 +274,54 @@ func triggerAgentReload() error {
 		return fmt.Errorf("agent reload: %s", resp.Status)
 	}
 	return nil
+}
+
+// ensureAgentUnlocked unlocks the local agent if, and only if, it is currently
+// locked. The status check is what keeps this cheap: unlocking triggers an
+// OS re-authentication prompt (Windows Hello, Touch ID), and sending it
+// unconditionally would ask the user to authenticate on every single command
+// even though the agent was already unlocked.
+func ensureAgentUnlocked() error {
+	locked, err := agentLocked()
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return nil
+	}
+
+	req, err := http.NewRequest(http.MethodPost, agentBaseURL+"/unlock", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := agentClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("agent unlock: %s", resp.Status)
+	}
+	return nil
+}
+
+// agentLocked reports whether the agent currently refuses env access.
+func agentLocked() (bool, error) {
+	resp, err := agentClient.Get(agentBaseURL + "/status")
+	if err != nil {
+		return false, fmt.Errorf("connect agent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("agent status: %s", resp.Status)
+	}
+
+	var sr statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return false, fmt.Errorf("decode status: %w", err)
+	}
+	return sr.Locked, nil
 }
 
 // deleteVaultByRef deletes a vault identified by name or ID from persistent storage.
@@ -327,4 +391,106 @@ func deleteVaultByRef(ref string, skipConfirm bool) error {
 	return nil
 }
 
+// envPair is one KEY=VALUE assignment read from an env-style file.
+type envPair struct {
+	Key   string
+	Value string
+}
 
+// parseEnvFile reads env-style input (KEY=VALUE, # comments) and returns the
+// pairs in file order. Beyond the original minimal parsing it also handles the
+// three things real .env files almost always contain:
+//
+//   - a leading "export " on the key,
+//   - values wrapped in matching single or double quotes,
+//   - surrounding whitespace around unquoted values.
+//
+// When a key appears more than once the last assignment wins, which matches
+// how shells and dotenv loaders behave.
+func parseEnvFile(r io.Reader) ([]envPair, error) {
+	var pairs []envPair
+	indexByKey := make(map[string]int)
+
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+
+		key = strings.TrimSpace(key)
+		key = strings.TrimSpace(strings.TrimPrefix(key, "export "))
+		if key == "" {
+			continue
+		}
+
+		value = unquoteEnvValue(value)
+
+		if i, ok := indexByKey[key]; ok {
+			pairs[i].Value = value
+			continue
+		}
+		indexByKey[key] = len(pairs)
+		pairs = append(pairs, envPair{Key: key, Value: value})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return pairs, nil
+}
+
+// unquoteEnvValue trims a value and removes one layer of matching quotes.
+// Whitespace inside quotes is significant and is preserved.
+func unquoteEnvValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		first, last := value[0], value[len(value)-1]
+		if first == last && (first == '"' || first == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
+}
+
+// formatExport renders the env map for --export.
+//
+// "raw" prints plain KEY=VALUE lines. "shell" single-quotes each value so the
+// output survives `eval $(tforge --export ...)`: without quoting, a value
+// containing a space, newline or semicolon would be split by the shell or, in
+// the worst case, executed as a command of its own.
+//
+// Keys are sorted in both modes; Go randomises map iteration order, so the
+// output was previously different on every run.
+func formatExport(env map[string]string, format string) (string, error) {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	switch strings.ToLower(format) {
+	case "", "raw":
+		for _, k := range keys {
+			fmt.Fprintf(&b, "%s=%s\n", k, env[k])
+		}
+	case "shell":
+		for _, k := range keys {
+			fmt.Fprintf(&b, "%s=%s\n", k, shellQuote(env[k]))
+		}
+	default:
+		return "", fmt.Errorf("unsupported --export-format %q (use raw|shell)", format)
+	}
+	return b.String(), nil
+}
+
+// shellQuote wraps s in single quotes for POSIX shells, escaping any single
+// quote it contains using the standard POSIX close-escape-reopen idiom.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
