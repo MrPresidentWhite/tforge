@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"tforge/internal/envfile"
 	"tforge/internal/secure"
 	"tforge/internal/storage"
 	"tforge/internal/vault"
@@ -214,7 +214,7 @@ func importEnvFileAsVault(name, duplicateTo, filePath, entryType string) error {
 	}
 	defer f.Close()
 
-	pairs, err := parseEnvFile(f)
+	pairs, err := envfile.Parse(f)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
@@ -410,72 +410,6 @@ func deleteVaultByRef(ref string, skipConfirm bool) error {
 
 	fmt.Printf("Deleted vault %q (ID: %s)\n", v.Name, v.ID)
 	return nil
-}
-
-// envPair is one KEY=VALUE assignment read from an env-style file.
-type envPair struct {
-	Key   string
-	Value string
-}
-
-// parseEnvFile reads env-style input (KEY=VALUE, # comments) and returns the
-// pairs in file order. Beyond the original minimal parsing it also handles the
-// three things real .env files almost always contain:
-//
-//   - a leading "export " on the key,
-//   - values wrapped in matching single or double quotes,
-//   - surrounding whitespace around unquoted values.
-//
-// When a key appears more than once the last assignment wins, which matches
-// how shells and dotenv loaders behave.
-func parseEnvFile(r io.Reader) ([]envPair, error) {
-	var pairs []envPair
-	indexByKey := make(map[string]int)
-
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-
-		key = strings.TrimSpace(key)
-		key = strings.TrimSpace(strings.TrimPrefix(key, "export "))
-		if key == "" {
-			continue
-		}
-
-		value = unquoteEnvValue(value)
-
-		if i, ok := indexByKey[key]; ok {
-			pairs[i].Value = value
-			continue
-		}
-		indexByKey[key] = len(pairs)
-		pairs = append(pairs, envPair{Key: key, Value: value})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return pairs, nil
-}
-
-// unquoteEnvValue trims a value and removes one layer of matching quotes.
-// Whitespace inside quotes is significant and is preserved.
-func unquoteEnvValue(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) >= 2 {
-		first, last := value[0], value[len(value)-1]
-		if first == last && (first == '"' || first == '\'') {
-			return value[1 : len(value)-1]
-		}
-	}
-	return value
 }
 
 // formatExport renders the env map for --export.
