@@ -108,6 +108,31 @@ TForge falls back to `SoftwareProtector` and **logs that it did so**. The
 fallback is a security downgrade — it writes a `master.key` next to the vault
 instead of letting the OS hold the key — so it should never happen silently.
 
+### On‑disk format
+
+`vaults.bin` carries a small header in front of the sealed payload:
+
+```
+0..4  magic "TFVLT"
+5     format version (currently 1)
+6     which protector sealed the payload (software / DPAPI / keyring)
+7..   sealed payload
+```
+
+Without it the file was a bare opaque blob, which meant a failed decrypt
+could not be told apart from a corrupt file, and any later format change
+would have been guesswork.
+
+- **Files written before the header still load.** They start straight into the
+  sealed payload; TForge detects that and falls back to a plain unseal. The
+  next save writes the header, so a file upgrades itself with no migration
+  step.
+- **A newer format version is refused outright**, rather than being decrypted
+  on a guess.
+- **The header is advisory, not authenticated.** It sits outside the AEAD, so
+  editing the protector byte can only produce a misleading error message — it
+  can never make a payload decrypt that otherwise would not.
+
 ### Refusing to overwrite unreadable vault data
 
 If `vaults.bin` exists but cannot be decrypted, the GUI does **not** start with
@@ -116,8 +141,10 @@ warning banner. Without this, the next save would replace the encrypted file
 with whatever is in memory (usually nothing) and destroy the vaults.
 
 The most likely trigger is a protector mismatch: a legacy `master.key`
-installation opened by a build that now uses DPAPI. `App.StartupError()`
-exposes the reason to the frontend.
+installation opened by a build that now uses DPAPI. Thanks to the header the
+error says so explicitly — which protector sealed the file and which one is in
+use now — instead of only reporting a failed authentication tag.
+`App.StartupError()` exposes the reason to the frontend.
 
 > **Migration note**  
 > Older versions used only `SoftwareProtector` with a local `master.key` file.
@@ -600,16 +627,14 @@ everything else.
 - [x] ~~OS‑backed `Protector` on Windows (DPAPI)~~
 - [x] ~~OS‑backed `Protector` on macOS/Linux (Keychain / Secret Service)~~
 - [x] ~~agent starts locked, with inactivity timeout and Windows Hello re‑auth on unlock~~
+- [x] ~~a versioned header for the storage format, recording the format version
+      and which protector sealed the payload~~
 - [ ] **encrypted export / import for backup and recovery.** DPAPI is bound to
       the Windows user profile: if that profile is gone — reinstall, corruption,
       dead disk — `vaults.bin` cannot be decrypted by anything, and there is
       currently no way out. Of everything on this list, this is the only gap
-      with no mitigation at all today.
-- [ ] **a versioned header for the storage format.** `vaults.bin` is currently
-      just `Seal(json.Marshal(vaults))`: no format version, no record of which
-      protector sealed it. That makes “sealed with a different protector”
-      indistinguishable from “corrupt file”, and turns any future format change
-      into guesswork. Export/import needs it as well, so it comes first.
+      with no mitigation at all today. The storage header above is the
+      groundwork; the export container can reuse the same framing.
 - [ ] **a guard against concurrent writes.** The GUI and the CLI both
       read‑modify‑write the entire file without a lock. Deleting a vault from
       the CLI while the GUI is open brings it back on the GUI’s next save, and

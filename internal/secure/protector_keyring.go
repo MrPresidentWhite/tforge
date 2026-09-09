@@ -61,6 +61,9 @@ func loadOrCreateKeyFromKeyring() ([]byte, error) {
 	return key, nil
 }
 
+// Kind identifies this protector in the on-disk header.
+func (p *KeyringProtector) Kind() Kind { return KindKeyring }
+
 // Seal encrypts plaintext using AES-GCM with a key stored in the keyring.
 // Layout: [12 Byte Nonce][4 Byte TagLen][Ciphertext+Tag]
 func (p *KeyringProtector) Seal(plaintext []byte) ([]byte, error) {

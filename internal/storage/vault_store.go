@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	appDirName   = "TForge"
-	vaultsFile   = "vaults.bin"
+	appDirName = "TForge"
+	vaultsFile = "vaults.bin"
 )
 
 // ConfigDir liefert den Basis-Konfigpfad für TForge, z.B. %APPDATA%\TForge.
@@ -46,8 +46,24 @@ func LoadVaults(p secure.Protector) ([]*vault.Vault, error) {
 		return nil, fmt.Errorf("read vaults: %w", err)
 	}
 
-	plaintext, err := p.Unseal(data)
+	hdr, payload, framed := splitFile(data)
+
+	// A newer format is not something to guess at, so stop before decrypting.
+	if framed && hdr.Version > formatVersion {
+		return nil, &UnsupportedVersionError{Found: hdr.Version, Supported: formatVersion}
+	}
+
+	plaintext, err := p.Unseal(payload)
 	if err != nil {
+		// Turn the most common cause into an error that actually says what
+		// happened, instead of a bare "cipher: message authentication failed".
+		if framed && hdr.Kind != p.Kind() {
+			return nil, &ProtectorMismatchError{
+				Sealed:  hdr.Kind,
+				Current: p.Kind(),
+				Err:     err,
+			}
+		}
 		return nil, fmt.Errorf("unseal vaults: %w", err)
 	}
 
@@ -76,8 +92,12 @@ func SaveVaults(p secure.Protector, vaults []*vault.Vault) error {
 		return fmt.Errorf("seal vaults: %w", err)
 	}
 
+	// Every write emits the current framing, so a legacy file upgrades itself
+	// the first time it is saved -- no separate migration step needed.
+	out := append(encodeHeader(p.Kind()), ciphertext...)
+
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, ciphertext, 0o600); err != nil {
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
 		return fmt.Errorf("write tmp vaults: %w", err)
 	}
 
@@ -86,4 +106,3 @@ func SaveVaults(p secure.Protector, vaults []*vault.Vault) error {
 	}
 	return nil
 }
-

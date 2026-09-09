@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tforge/internal/secure"
 	"tforge/internal/vault"
 )
 
@@ -27,6 +28,15 @@ func isolateConfigDir(t *testing.T) string {
 // assert on framing and file handling without depending on any real crypto.
 type fakeProtector struct {
 	failUnseal bool
+	kind       secure.Kind
+}
+
+// Kind defaults to the software protector so existing tests need no changes.
+func (f *fakeProtector) Kind() secure.Kind {
+	if f.kind == secure.KindUnknown {
+		return secure.KindSoftware
+	}
+	return f.kind
 }
 
 func (f *fakeProtector) Seal(plaintext []byte) ([]byte, error) {
@@ -102,8 +112,13 @@ func TestSaveVaultsWritesEncryptedBytesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read vaults.bin: %v", err)
 	}
-	if len(data) < len("sealed:") || string(data[:len("sealed:")]) != "sealed:" {
-		t.Error("vaults.bin was not written through the protector")
+
+	_, payload, framed := splitFile(data)
+	if !framed {
+		t.Fatal("vaults.bin was written without the format header")
+	}
+	if len(payload) < len("sealed:") || string(payload[:len("sealed:")]) != "sealed:" {
+		t.Error("the payload was not written through the protector")
 	}
 
 	// The temp file used for the atomic rename must not be left behind.

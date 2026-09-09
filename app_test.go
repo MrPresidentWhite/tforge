@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"tforge/internal/secure"
 	"tforge/internal/vault"
 )
 
@@ -20,6 +21,8 @@ func (s *stubProtector) Seal(plaintext []byte) ([]byte, error) {
 func (s *stubProtector) Unseal(ciphertext []byte) ([]byte, error) {
 	return ciphertext[len("sealed:"):], nil
 }
+
+func (s *stubProtector) Kind() secure.Kind { return secure.KindSoftware }
 
 // newAppWithLoadError builds an App in the state it ends up in when an existing
 // vaults.bin could not be decrypted at startup.

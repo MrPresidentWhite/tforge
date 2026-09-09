@@ -12,11 +12,52 @@ import (
 	"path/filepath"
 )
 
+// Kind identifies a Protector implementation.
+//
+// The kind of the protector that sealed a payload is recorded alongside it on
+// disk, which is what lets a failed decrypt distinguish "this was sealed by a
+// different protector" from "this file is corrupt". Values are persisted, so
+// existing ones must never be renumbered.
+type Kind uint8
+
+const (
+	KindUnknown  Kind = 0
+	KindSoftware Kind = 1
+	KindDPAPI    Kind = 2
+	KindKeyring  Kind = 3
+)
+
+func (k Kind) String() string {
+	switch k {
+	case KindSoftware:
+		return "software (master.key)"
+	case KindDPAPI:
+		return "Windows DPAPI"
+	case KindKeyring:
+		return "OS keyring"
+	default:
+		return "unknown"
+	}
+}
+
+// Known reports whether k is a kind this build understands. A file recording
+// an unknown kind was most likely written by a newer version of TForge.
+func (k Kind) Known() bool {
+	switch k {
+	case KindSoftware, KindDPAPI, KindKeyring:
+		return true
+	default:
+		return false
+	}
+}
+
 // Protector kapselt die Verschlüsselung von Daten.
 // Später kann hier eine TPM-basierte Implementierung hinterlegt werden.
 type Protector interface {
 	Seal(plaintext []byte) ([]byte, error)
 	Unseal(ciphertext []byte) ([]byte, error)
+	// Kind reports which implementation this is, for the on-disk header.
+	Kind() Kind
 }
 
 // SoftwareProtector ist eine erste, rein Software-basierte Implementierung.
@@ -64,6 +105,9 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	}
 	return key, nil
 }
+
+// Kind identifies this protector in the on-disk header.
+func (p *SoftwareProtector) Kind() Kind { return KindSoftware }
 
 // Seal verschlüsselt plaintext mit AES-GCM.
 // Layout: [12 Byte Nonce][4 Byte TagLen][Ciphertext+Tag]

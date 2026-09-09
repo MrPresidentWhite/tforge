@@ -23,6 +23,9 @@ func NewDPAPIProtector() (*DPAPIProtector, error) {
 	return &DPAPIProtector{}, nil
 }
 
+// Kind identifies this protector in the on-disk header.
+func (p *DPAPIProtector) Kind() Kind { return KindDPAPI }
+
 // Seal encrypts plaintext using Windows DPAPI for the current user.
 func (p *DPAPIProtector) Seal(plaintext []byte) ([]byte, error) {
 	if len(plaintext) == 0 {
