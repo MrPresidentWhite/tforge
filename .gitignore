@@ -17,6 +17,18 @@ Thumbs.db
 *.log
 .idea/
 *.iml
+.vs/
 
-tforge
-tforge-agent
+# Kompilierte Binaries im Repo-Root. Die fuehrenden Slashes sind wichtig:
+# ohne sie matchen die Muster jedes Verzeichnis dieses Namens und schliessen
+# damit auch cmd/tforge/ und cmd/tforge-agent/ komplett aus.
+/tforge
+/tforge-agent
+
+# Windows helper binaries
+helper-bin/
+hello-helper/**/bin/
+hello-helper/**/obj/
+
+uninstall-tforge-tools.ps1
+uninstall-tforge-tools.sh
