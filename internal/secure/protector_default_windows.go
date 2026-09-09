@@ -2,18 +2,21 @@
 
 package secure
 
+import "log"
+
 // NewDefaultProtector returns the recommended Protector on Windows.
 // It prefers a DPAPI-backed implementation and falls back to the
 // software-based protector if DPAPI is not available.
 //
-// Die eigentliche Migration von alten, mit master.key verschlüsselten
-// Vaults erfolgt ausschließlich über das separate Tool
-// `tforge-migrate-vaults` und nicht mehr in der Hauptanwendung.
+// The fallback is a security downgrade: it writes a master.key file next to
+// the vault instead of delegating key protection to the OS, so it is logged
+// rather than applied silently.
 func NewDefaultProtector(configDir string) (Protector, error) {
-	if p, err := NewDPAPIProtector(); err == nil {
+	p, err := NewDPAPIProtector()
+	if err == nil {
 		return p, nil
 	}
-	// Fallback: reine Software-basierte Verschlüsselung.
+
+	log.Printf("DPAPI unavailable (%v); falling back to a local master.key file", err)
 	return NewSoftwareProtector(configDir)
 }
-
