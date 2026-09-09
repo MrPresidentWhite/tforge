@@ -29,10 +29,11 @@ TForge consists of three main pieces:
 
 - **Local Agent / Daemon** (`cmd/tforge-agent`)
   - small HTTP server bound to `127.0.0.1:5959`
-  - loads the same encrypted vault file as the GUI and exposes a minimal RPC API:
-    - `GET /health`
-    - `GET /env?vault=<nameOrID>&env=<dev|staging|prod>`
+  - loads the same encrypted vault file as the GUI and exposes a minimal RPC API
+    (`/health`, `/env`, `/lock`, `/unlock`, `/status`, `/reload`)
   - returns a JSON map `{ "env": { KEY: VALUE, ... } }` for the requested vault and environment
+  - **starts locked**: `/env` stays closed until something unlocks it, which on
+    supported platforms requires an OS re‑authentication step
 
 - **CLI Runner** (`cmd/tforge`)
   - command‑line front‑end that talks to the agent and starts arbitrary processes with injected env vars
@@ -102,10 +103,28 @@ the current user.
     `master.key` if you want to move vaults between machines, and you must protect access
     to the config directory itself.
 
+If a protector cannot be initialised (DPAPI unavailable, no working keyring),
+TForge falls back to `SoftwareProtector` and **logs that it did so**. The
+fallback is a security downgrade — it writes a `master.key` next to the vault
+instead of letting the OS hold the key — so it should never happen silently.
+
+### Refusing to overwrite unreadable vault data
+
+If `vaults.bin` exists but cannot be decrypted, the GUI does **not** start with
+an empty vault list. It keeps the error, disables all persistence and shows a
+warning banner. Without this, the next save would replace the encrypted file
+with whatever is in memory (usually nothing) and destroy the vaults.
+
+The most likely trigger is a protector mismatch: a legacy `master.key`
+installation opened by a build that now uses DPAPI. `App.StartupError()`
+exposes the reason to the frontend.
+
 > **Migration note**  
 > Older versions used only `SoftwareProtector` with a local `master.key` file.
 > Current builds on Windows use DPAPI by default; existing installations should
 > migrate their vaults before dropping legacy artefacts or switching machines.
+> If you see the warning banner described above, your `vaults.bin` is intact —
+> it is simply sealed with a different protector than the one currently in use.
 
 ---
 
@@ -123,12 +142,24 @@ The core data model (`internal/vault/vault.go`):
   - `Type` – `"env"`, `"secret"`, `"note"` (UI uses this to style entries)
   - `GroupPrefix` – optional grouping prefix (e.g. `POSTGRES_`) for nicer UI
 
-The Wails frontend allows:
+The Wails frontend shows all three environments **side by side**, one column
+each, so a missing `staging` value is visible without switching modes. Each
+environment has its own colour (`dev` blue, `staging` amber, `prod` red), which
+doubles as a warning cue when editing production values.
 
-- grouping keys via `GroupPrefix` (e.g. `POSTGRES_` → `POSTGRES_HOST`, `POSTGRES_USER`, …)
-- editing values for `dev`, `staging`, `prod`
-- bulk adding keys within a group
-- duplicating `dev` values into `staging` or `prod` via the custom context menu
+It allows:
+
+- searching keys **and** values (`/` or `Ctrl+F`)
+- grouping keys via `GroupPrefix` (e.g. `POSTGRES_` → `POSTGRES_HOST`, `POSTGRES_USER`, …),
+  rendered as collapsible blocks
+- editing any value inline — click a cell, `Tab` moves to the next environment
+  in the same row, `Esc` discards
+- bulk adding keys, either standalone or under a shared prefix
+- selecting rows via checkboxes; the actions for the selection (group them,
+  copy `dev` into `staging`/`prod`, delete) appear in a bar rather than being
+  hidden behind a right‑click
+- masking `secret` values, revealed per row or globally
+- restricting the view to a single environment when the window is narrow
 
 ---
 
@@ -148,34 +179,62 @@ GET /health
 
 GET /env?vault=<nameOrID>&env=<dev|staging|prod>
   -> 200 OK, JSON: { "env": { KEY: VALUE, ... } }
+  -> 400 if the vault parameter is missing
   -> 404 if vault not found
+  -> 423 Locked if the agent is locked
 
 POST /lock
   -> 200 OK, body: "locked"
 
 POST /unlock
   -> 200 OK, body: "unlocked"
+  -> 401 if the OS re-authentication failed or was cancelled
 
 GET /status
   -> 200 OK, JSON: { "locked": true|false, "timeoutSeconds": <int> }
 
 POST /reload
   -> 200 OK, body: "reloaded"
+  -> 404 if there is currently no vault file on disk
 ```
+
+Every endpoint answers `405` for the wrong HTTP method, and `403` for requests
+that did not come from a local, non-browser client (see below).
 
 - `POST /reload` re-reads `vaults.bin` and updates the in-memory vault list.
   The CLI calls this automatically after `--create-vault` so a running agent
   sees the new vault without restart. You can also call it manually after
-  editing vaults on disk.
+  editing vaults on disk. A missing vault file is reported as `404` rather than
+  applied — otherwise a file that momentarily disappears would silently wipe
+  every vault the agent still holds.
+
+### Who may talk to the agent
+
+Binding to loopback is not enough on its own: any web page the user visits can
+send a request to `127.0.0.1` from their browser. Without a guard, a malicious
+page could `POST /unlock` and pop a Windows Hello prompt, and a DNS rebinding
+attack could go on to read `/env`.
+
+The agent therefore rejects a request with `403` when:
+
+- the `Host` header is not its own loopback address — a request addressed to
+  some other name that merely resolves to `127.0.0.1` is a rebinding attempt, or
+- the request carries an `Origin` or `Sec-Fetch-Site` header, which means a
+  browser sent it. Nothing that legitimately talks to the agent runs in a browser.
+
+This is a hardening measure, not an authentication scheme. Any local process
+running as the same user can still reach the agent; the lock state and the
+re‑authentication step below are what stand between such a process and the
+secrets.
 
 Lock semantics:
 
 - When the agent is **locked**, `/env` refuses to return any environment
   data and instead responds with `423 Locked` and a short error message
   (`"agent is locked; env access disabled"`).
-- Lock/unlock is intentionally simple and **local-only** in this first
-  iteration; there is no authentication yet. Future versions may add
-  proper session-based security and re-auth flows.
+- The agent starts in a **locked** state by default. Unlocking requires
+  a POST to `/unlock`, which may trigger a short OS-level re-authentication
+  step (e.g. Windows Hello, macOS login / Touch ID) on supported platforms.
 
 Inactivity timeout:
 
@@ -208,11 +267,36 @@ Env mapping (when unlocked):
 
 - picks `ValueDev` / `ValueStage` / `ValueProd` based on `env` query parameter
 - skips empty values
-- currently does not filter by `Entry.Type` (can be refined later)
+- currently does not filter by `Entry.Type`, so `note` entries are injected as
+  environment variables like any other key (can be refined later)
 
-The agent is designed to be simple and local‑only. There is no authentication yet
-because the process is expected to run under the current user and only listen on
-`127.0.0.1`. A future enhancement is to add an explicit unlock / re‑auth flow.
+### OS re‑authentication on unlock
+
+`POST /unlock` calls `secure.RequireOSReauth()` before changing the lock state:
+
+- **Windows** – runs `tforge-hello-helper.exe`, a small WinRT helper that asks
+  `UserConsentVerifier` for Windows Hello. Exit code `0` means verified;
+  anything else (including a cancelled prompt) fails the unlock. The call is
+  bounded by a 60 s timeout so an unanswered dialog cannot block the agent.
+- **macOS / Linux** – currently a stub that always succeeds. Since the agent
+  starts locked, this means any local process on those platforms can unlock it.
+  Touch ID / LocalAuthentication is still open work.
+
+The helper is looked up **only** next to the agent executable, either directly
+or in a `helper-bin/` subdirectory. It is deliberately never taken from the
+working directory: the helper's exit code is what authorises unlocking, so
+picking one up from wherever the agent happens to have been started would let
+anyone who can write to that directory plant a binary that exits `0`.
+
+For development — where `go run` places the agent in a temporary directory —
+point `TFORGE_HELLO_HELPER` at the helper instead:
+
+```powershell
+$env:TFORGE_HELLO_HELPER = "C:\path\to\tforge\helper-bin\tforge-hello-helper.exe"
+```
+
+Building the agent into the repository root instead of using `go run` needs no
+environment variable, because `helper-bin/` then sits next to the binary.
 
 ---
 
@@ -234,6 +318,9 @@ tforge --env prod @MyVault npm run dev
 # export mode (no process, just KEY=VALUE to stdout)
 tforge --env dev --export @MyVault
 
+# export quoted for a shell
+eval "$(tforge --env dev --export --export-format shell @MyVault)"
+
 # import mode (create a new vault from an env-style file)
 tforge --create-vault MyVault --file path/to/.env --type secrets --duplicate-to prod
 ```
@@ -246,11 +333,37 @@ Rules:
 - CLI calls the agent at `http://127.0.0.1:5959/env?...` and merges returned
   env vars into the child process’s `Env`.
 
+Unlocking:
+
+- Before fetching env data the CLI asks the agent for `/status` and only sends
+  `/unlock` when the agent actually reports itself locked. That keeps the OS
+  re‑authentication prompt to roughly once per session instead of once per
+  command.
+
+Export mode:
+
+- Keys are always sorted, so repeated runs produce identical output. (Go
+  randomises map iteration order, which previously made the output differ on
+  every invocation.)
+- `--export-format raw` (default) prints plain `KEY=VALUE` lines.
+- `--export-format shell` single‑quotes each value so the output survives
+  `eval`. Without quoting, a value containing a space, newline or semicolon
+  would be split by the shell or, in the worst case, executed as a command of
+  its own. Use this whenever the output is fed to a shell.
+
 Import mode:
 
 - `tforge --create-vault <Name> --file <path>` creates a new vault directly
   in the local storage, importing keys from an env-style file (`KEY=VALUE`,
   `#` comments supported).
+- The parser also handles what real `.env` files usually contain: a leading
+  `export ` on the key, values wrapped in matching single or double quotes, and
+  surrounding whitespace around unquoted values. Whitespace *inside* quotes is
+  preserved. When a key appears twice the last assignment wins, matching how
+  shells and dotenv loaders behave.
+- Vault names must be unique. The agent resolves a reference by ID *or* name
+  and takes the first match, so a duplicate name would make `tforge @Name`
+  ambiguous; the import refuses it instead.
 - If the agent is running, the CLI triggers a reload so the new vault is
   visible immediately; otherwise restart the agent to see it.
 - Values are imported into the `dev` environment by default; use
@@ -276,25 +389,76 @@ environment of the child process.
 
 ## Development
 
+Requirements:
+
+- **Go 1.25 or newer** (the `go` directive in `go.mod` is `1.25.0`)
+- **Wails CLI v2.15.0 or newer** — older CLI builds embed a `golang.org/x/tools`
+  that cannot read the export data of recent Go toolchains and fail with
+  `internal error: package "..." without types was imported from "..."`:
+
+  ```bash
+  go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+  ```
+
+- **.NET SDK 8 or newer**, only on Windows and only to build the Windows Hello
+  helper
+
 ### Wails App (GUI)
 
 ```bash
-cd tforge
 wails dev      # live reloading UI + Go
 wails build    # build production bundle
 ```
 
+`wails dev` also serves the frontend at `http://localhost:34115`, where the
+bound Go methods are callable from a normal browser — useful for inspecting the
+UI with devtools.
+
 ### Agent & CLI
 
+Build the agent into the repository root so it finds the Windows Hello helper
+in `helper-bin/` without extra configuration:
+
 ```bash
-# from repo root
-go run ./cmd/tforge-agent
-go run ./cmd/tforge --env dev @MyVault npm run dev
+go build -o tforge-agent.exe ./cmd/tforge-agent
 ```
 
-You can also use the helper script `install-tforge-tools.ps1` (Windows/PowerShell)
-to build `tforge` and `tforge-agent` into a `~/.tforge/bin` directory, add
-it to your PATH and (on Windows) set up auto‑start for the agent.
+```bash
+go build -o tforge.exe ./cmd/tforge
+```
+
+With `go run` the binary lands in a temporary directory instead, so the helper
+has to be pointed at explicitly via `TFORGE_HELLO_HELPER` (see the agent
+section above).
+
+### Windows Hello helper
+
+```powershell
+./build-hello-helper.ps1
+```
+
+Publishes `hello-helper/TForge.HelloHelper` as a self-contained single-file
+executable and copies it to `helper-bin/tforge-hello-helper.exe`. Pass
+`-OutDir` to place it elsewhere — the installer uses this to put the helper
+next to the installed agent.
+
+### Tests
+
+```bash
+go test ./...
+```
+
+Covers the env-file parser and export quoting, the agent's lock behaviour and
+local-client guard, the vault service's copy semantics, the AES-GCM round trip
+including tampering and wrong-key cases, and the refusal to persist after a
+failed load.
+
+### Install scripts
+
+`install-tforge-tools.ps1` (Windows/PowerShell) builds `tforge`,
+`tforge-agent` and the Windows Hello helper into `~/.tforge/bin`, adds that
+directory to your PATH and sets up auto-start for the agent.
+`install-tforge-tools.sh` does the equivalent on Linux and macOS.
 
 ---
 
@@ -302,8 +466,9 @@ it to your PATH and (on Windows) set up auto‑start for the agent.
 
 Requirements:
 
-- Go installed and on `PATH`
+- Go 1.25+ installed and on `PATH`
 - PowerShell (default on Windows 10+)
+- .NET SDK 8+ on `PATH`, for the Windows Hello helper
 
 Steps:
 
@@ -317,6 +482,11 @@ Steps:
    - Default install path is `~\.tforge\bin`.
    - This directory is added to your user `PATH` so `tforge` and `tforge-agent`
      are available in new terminals.
+   - The script also builds `tforge-hello-helper.exe` and places it next to the
+     agent. **Without it the agent cannot be unlocked** — it starts locked, and
+     `/unlock` has no way to run the Windows Hello prompt. If the .NET SDK is
+     missing the script warns and continues; run `./build-hello-helper.ps1`
+     afterwards to catch up.
 
 3. Agent auto‑start:
 
@@ -343,7 +513,7 @@ tforge --env dev @MyVault npm run dev
 TForge is intended to work on modern Linux distributions and recent macOS
 versions with:
 
-- a recent Go toolchain,
+- Go 1.25 or newer,
 - **systemd user services** on Linux (for convenient autostart),
 - or **LaunchAgents** on macOS,
 - and a desktop keyring implementation (for the keyring‑backed protector).
@@ -425,7 +595,9 @@ journalctl --user -u tforge-agent.service
 
 - [x] ~~OS‑backed `Protector` on Windows (DPAPI)~~
 - [x] ~~OS‑backed `Protector` on macOS/Linux (Keychain / Secret Service)~~
-- [ ] improved agent security and unlock flows (session timeouts, re‑auth, optional PIN / biometrics)
+- [x] ~~agent starts locked, with inactivity timeout and Windows Hello re‑auth on unlock~~
+- [ ] re‑auth on macOS (LocalAuthentication / Touch ID) and Linux — both are
+      still stubs that always succeed, so the lock offers no protection there
 - [ ] first‑class Linux support (packaging, autostart, desktop integration)
 - [ ] clear headless/CI story for using vaults in build pipelines
 
