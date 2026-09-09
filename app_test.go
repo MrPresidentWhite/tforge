@@ -24,6 +24,9 @@ func (s *stubProtector) Unseal(ciphertext []byte) ([]byte, error) {
 
 func (s *stubProtector) Kind() secure.Kind { return secure.KindSoftware }
 
+// errWriteBlocked stands in for the startup failure that disables persistence.
+var errWriteBlocked = errors.New("unseal vaults: decrypt: cipher: message authentication failed")
+
 // newAppWithLoadError builds an App in the state it ends up in when an existing
 // vaults.bin could not be decrypted at startup.
 func newAppWithLoadError() (*App, *stubProtector) {
@@ -31,7 +34,7 @@ func newAppWithLoadError() (*App, *stubProtector) {
 	return &App{
 		vaults:    vault.NewService(),
 		protector: prot,
-		loadErr:   errors.New("unseal vaults: decrypt: cipher: message authentication failed"),
+		loadErr:   errWriteBlocked,
 	}, prot
 }
 

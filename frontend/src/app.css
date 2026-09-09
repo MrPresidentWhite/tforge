@@ -1360,3 +1360,214 @@ textarea {
     margin-top: 4px;
     word-break: break-word;
 }
+
+/* ==========================================================================
+   Import-Assistent
+   ========================================================================== */
+
+.modal-source-toggle {
+    margin-bottom: 16px;
+}
+
+.file-slot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    transition: border-color 0.12s, background 0.12s;
+}
+
+.file-slot.is-filled {
+    border-style: solid;
+    border-color: rgba(99, 132, 255, 0.4);
+    background: var(--bg-active);
+}
+
+.file-slot-icon {
+    display: flex;
+    color: var(--text-faint);
+    flex-shrink: 0;
+}
+
+.file-slot.is-filled .file-slot-icon {
+    color: var(--accent);
+}
+
+.file-slot-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.file-slot-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.file-slot-meta {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.import-structure {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.import-group,
+.import-single {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.import-group {
+    background: var(--bg-active);
+    border: 1px solid rgba(99, 132, 255, 0.35);
+    color: #b5c4ff;
+    font-weight: 700;
+}
+
+.import-single {
+    background: var(--bg-surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+}
+
+.import-env {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+    margin-top: 14px;
+}
+
+.import-env-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 8px;
+}
+
+.import-env-title {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.7px;
+}
+
+.import-ok {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--ok);
+}
+
+.import-issue-label {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--env-staging);
+    margin: 10px 0 6px;
+}
+
+.import-fill-list,
+.import-adopt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 190px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.import-fill-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) 1.4fr;
+    align-items: center;
+    gap: 8px;
+}
+
+.import-fill-key {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.import-adopt-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.import-adopt-row .row-check {
+    border-color: var(--text-faint);
+}
+
+.import-adopt-hint {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-left: auto;
+}
+
+/* ==========================================================================
+   Backup-Dialog
+   ========================================================================== */
+
+.backup-choice-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.backup-choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+}
+
+.backup-choice:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+
+.backup-choice-icon {
+    display: flex;
+    color: var(--accent);
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.backup-choice-title {
+    font-size: 13px;
+    font-weight: 800;
+    margin-bottom: 2px;
+}
+
+.backup-choice-text {
+    font-size: 12px;
+    color: var(--text-faint);
+    line-height: 1.45;
+}

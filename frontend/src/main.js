@@ -9,6 +9,14 @@ import {
     DeleteVault,
     ChooseVaultIcon,
     StartupError,
+    ChooseEnvFile,
+    AnalyseEnvImport,
+    CreateVaultFromImport,
+    ChooseBackupTarget,
+    ChooseBackupSource,
+    BackupVaults,
+    RestoreVaults,
+    MinBackupPassphraseLength,
 } from '../wailsjs/go/main/App';
 
 const app = document.querySelector('#app');
@@ -48,6 +56,10 @@ function icon(name, size = 16) {
         alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/>',
         arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
         layers: '<path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/>',
+        archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/>',
+        file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+        upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 9l5-5 5 5"/><path d="M12 4v12"/>',
+        download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 11l5 5 5-5"/><path d="M12 16V4"/>',
     };
 
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -113,6 +125,8 @@ const state = {
 
     addPanel: null,
     vaultModal: null,
+    importReview: null,
+    backupModal: null,
     convertModal: null,
     duplicateModal: null,
     confirmModal: null,
@@ -321,7 +335,14 @@ function renderTopbar() {
         'Alle Secret-Werte im Klartext anzeigen'
     );
 
-    return el('div', 'topbar', [brand, searchBox, el('div', 'toolbar-spacer'), revealBtn]);
+    const backupBtn = button(
+        'btn btn-ghost',
+        [icon('archive', 15), 'Backup'],
+        openBackupModal,
+        'Vaults sichern oder aus einem Backup wiederherstellen'
+    );
+
+    return el('div', 'topbar', [brand, searchBox, el('div', 'toolbar-spacer'), revealBtn, backupBtn]);
 }
 
 /* ==========================================================================
@@ -425,7 +446,17 @@ function openVaultMenu(vaultId, x, y) {
    ========================================================================== */
 
 function openCreateVault() {
-    state.vaultModal = { mode: 'create', id: null, name: '', description: '', icon: '' };
+    state.vaultModal = {
+        mode: 'create',
+        id: null,
+        name: '',
+        description: '',
+        icon: '',
+        // 'blank' legt einen leeren Vault an, 'import' liest .env-Dateien ein.
+        source: 'blank',
+        files: { example: null, dev: null, staging: null, prod: null },
+        busy: false,
+    };
     render();
 }
 
@@ -1274,9 +1305,27 @@ function renderVaultModal() {
         }
     };
 
-    return modalShell('', [
+    const importing = m.mode === 'create' && m.source === 'import';
+
+    const sourceToggle = m.mode !== 'create' ? null : el('div', 'segmented modal-source-toggle', [
+        button('segmented-btn' + (m.source === 'blank' ? ' is-active' : ''), ['Leer'], () => {
+            m.source = 'blank';
+            render();
+        }),
+        button('segmented-btn' + (importing ? ' is-active' : ''), ['Aus .env-Dateien'], () => {
+            m.source = 'import';
+            render();
+        }),
+    ]);
+
+    return modalShell(importing ? 'modal-wide' : '', [
         el('div', 'modal-title', [m.mode === 'create' ? 'Neuer Vault' : 'Vault bearbeiten']),
-        el('div', 'modal-desc', ['Ein Vault bündelt die Keys eines Projekts.']),
+        el('div', 'modal-desc', [
+            importing
+                ? 'Die .env.example gibt die Struktur vor. Keys mit gemeinsamem Prefix werden automatisch gruppiert.'
+                : 'Ein Vault bündelt die Keys eines Projekts.',
+        ]),
+        sourceToggle,
         el('div', 'modal-field', [el('label', 'modal-label', ['Name']), nameInput]),
         el('div', 'modal-field', [el('label', 'modal-label', ['Beschreibung']), descInput]),
         el('div', 'modal-field', [
@@ -1294,9 +1343,12 @@ function renderVaultModal() {
                 m.icon ? button('btn btn-ghost btn-sm', ['Entfernen'], () => { m.icon = ''; render(); }) : null,
             ]),
         ]),
+        importing ? renderImportFilePickers(m) : null,
         el('div', 'modal-actions', [
             button('btn btn-ghost', ['Abbrechen'], close),
-            button('btn btn-primary', [m.mode === 'create' ? 'Anlegen' : 'Speichern'], save),
+            importing
+                ? button('btn btn-primary', [m.busy ? 'Analysiere …' : 'Weiter'], () => analyseImport(m))
+                : button('btn btn-primary', [m.mode === 'create' ? 'Anlegen' : 'Speichern'], save),
         ]),
     ], close);
 }
@@ -1428,6 +1480,484 @@ function renderConfirmModal() {
 }
 
 /* ==========================================================================
+   Import-Assistent: aus .env-Dateien einen Vault aufbauen
+   ========================================================================== */
+
+const IMPORT_SLOTS = [
+    { key: 'example', label: '.env.example', hint: 'gibt die Struktur vor', required: true },
+    { key: 'dev', label: 'DEV-Werte', hint: 'optional', env: 'dev' },
+    { key: 'staging', label: 'STAGING-Werte', hint: 'optional', env: 'staging' },
+    { key: 'prod', label: 'PROD-Werte', hint: 'optional', env: 'prod' },
+];
+
+function renderImportFilePickers(m) {
+    const wrap = el('div', 'modal-field', [
+        el('label', 'modal-label', ['Dateien']),
+    ]);
+
+    for (const slot of IMPORT_SLOTS) {
+        const picked = m.files[slot.key];
+        const row = el('div', 'file-slot' + (picked ? ' is-filled' : ''), []);
+
+        row.appendChild(el('span', 'file-slot-icon', [icon(picked ? 'file' : 'upload', 15)]));
+        row.appendChild(el('div', 'file-slot-main', [
+            el('div', 'file-slot-label', [
+                slot.label,
+                slot.env ? el('span', 'env-dot for-' + slot.env) : null,
+            ]),
+            el('div', 'file-slot-meta', [
+                picked ? picked.name + ' · ' + picked.count + ' Variablen' : slot.hint,
+            ]),
+        ]));
+
+        if (picked) {
+            row.appendChild(iconButton('btn-icon', 'x', () => {
+                m.files[slot.key] = null;
+                render();
+            }, 'Datei entfernen', 14));
+        } else {
+            row.appendChild(button('btn btn-ghost btn-sm', ['Wählen'], () => pickImportFile(m, slot)));
+        }
+
+        wrap.appendChild(row);
+    }
+
+    return wrap;
+}
+
+// countAssignments only feeds the "N Variablen" hint next to a chosen file.
+// The authoritative parsing happens in Go, so the two can never disagree about
+// anything that matters.
+function countAssignments(text) {
+    let n = 0;
+    for (const raw of (text || '').split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) continue;
+        if (line.includes('=')) n++;
+    }
+    return n;
+}
+
+async function pickImportFile(m, slot) {
+    try {
+        const picked = await ChooseEnvFile(slot.label + ' auswählen');
+        if (!picked) return; // abgebrochen
+        m.files[slot.key] = {
+            name: picked.name,
+            content: picked.content,
+            count: countAssignments(picked.content),
+        };
+        render();
+    } catch (err) {
+        toast('Datei konnte nicht gelesen werden: ' + describeError(err), 'error');
+    }
+}
+
+async function analyseImport(m) {
+    if (!(m.name || '').trim()) {
+        toast('Bitte zuerst einen Namen angeben.', 'error');
+        return;
+    }
+    if (!m.files.example) {
+        toast('Für den Import wird eine .env.example benötigt.', 'error');
+        return;
+    }
+
+    m.busy = true;
+    render();
+
+    try {
+        const analysis = await AnalyseEnvImport(
+            m.files.example.content,
+            m.files.dev ? m.files.dev.content : '',
+            m.files.staging ? m.files.staging.content : '',
+            m.files.prod ? m.files.prod.content : '',
+        );
+
+        state.importReview = {
+            name: m.name.trim(),
+            description: m.description || '',
+            icon: m.icon || '',
+            analysis,
+            // Manuell nachgetragene Werte, je Umgebung.
+            fills: { dev: {}, staging: {}, prod: {} },
+            // Unbekannte Keys, die in die Struktur uebernommen werden sollen.
+            adopt: {},
+            busy: false,
+        };
+        state.vaultModal = null;
+    } catch (err) {
+        toast('Analyse fehlgeschlagen: ' + describeError(err), 'error');
+    } finally {
+        m.busy = false;
+        render();
+    }
+}
+
+// groupPrefixFor finds the detected group a key belongs to, if any.
+function groupPrefixFor(analysis, key) {
+    for (const g of analysis.groups || []) {
+        if ((g.keys || []).includes(key)) return g.prefix;
+    }
+    // Nachtraeglich uebernommene Keys erben das Prefix einer passenden Gruppe.
+    for (const g of analysis.groups || []) {
+        if (key.startsWith(g.prefix)) return g.prefix;
+    }
+    return '';
+}
+
+// adoptedKeys returns the unknown keys the user chose to keep.
+function adoptedKeys(review) {
+    return Object.keys(review.adopt).filter(k => review.adopt[k]);
+}
+
+// valueFor resolves one cell: the file wins, a manual entry fills the gap.
+function valueFor(review, env, key) {
+    const report = review.analysis.envs[env] || {};
+    const fromFile = (report.values || {})[key];
+    if (fromFile !== undefined && fromFile !== '') return fromFile;
+    return (review.fills[env] || {})[key] || '';
+}
+
+function buildImportEntries(review) {
+    const keys = [...review.analysis.keys, ...adoptedKeys(review)];
+    return keys.map(key => ({
+        key,
+        groupPrefix: groupPrefixFor(review.analysis, key),
+        valueDev: valueFor(review, 'dev', key),
+        valueStage: valueFor(review, 'staging', key),
+        valueProd: valueFor(review, 'prod', key),
+        type: 'secret',
+    }));
+}
+
+function renderImportReview() {
+    const review = state.importReview;
+    const analysis = review.analysis;
+    const close = () => { state.importReview = null; render(); };
+
+    const body = el('div', null, []);
+
+    // --- Struktur-Vorschau ---
+    const structure = el('div', 'import-structure', []);
+    for (const g of analysis.groups || []) {
+        structure.appendChild(el('div', 'import-group', [
+            el('span', 'import-group-prefix', [g.prefix.replace(/_$/, '')]),
+            el('span', 'group-badge', [String(g.keys.length)]),
+        ]));
+    }
+    for (const k of analysis.ungrouped || []) {
+        structure.appendChild(el('div', 'import-single', [k]));
+    }
+
+    const adopted = adoptedKeys(review);
+    const totalKeys = analysis.keys.length + adopted.length;
+    const groupCount = (analysis.groups || []).length;
+
+    body.appendChild(el('div', 'modal-field', [
+        el('label', 'modal-label', ['Struktur · ' + totalKeys + ' Keys']),
+        el('div', 'modal-desc', [
+            groupCount > 0
+                ? groupCount + (groupCount === 1 ? ' Gruppe erkannt.' : ' Gruppen erkannt.')
+                    + ' Keys ohne Partner mit gleichem Prefix bleiben einzeln.'
+                : 'Keine gemeinsamen Prefixe gefunden – alle Keys bleiben einzeln.',
+        ]),
+        structure,
+    ]));
+
+    // --- Pro Umgebung ---
+    let anyIssue = false;
+
+    for (const env of ENVS) {
+        const report = analysis.envs[env];
+        if (!report || !report.provided) continue;
+
+        const section = el('div', 'import-env', []);
+        section.appendChild(el('div', 'import-env-head', [
+            el('span', 'env-dot for-' + env),
+            el('span', 'import-env-title', [ENV_LABEL[env]]),
+        ]));
+
+        const missing = report.missing || [];
+        const unknown = report.unknown || [];
+        const stillMissing = missing.filter(k => !(review.fills[env] || {})[k]);
+
+        if (stillMissing.length === 0 && unknown.length === 0) {
+            section.appendChild(el('div', 'import-ok', [
+                icon('check', 14),
+                'Stimmt mit der Struktur überein.',
+            ]));
+        } else {
+            anyIssue = true;
+        }
+
+        // Fehlende Werte lassen sich hier direkt nachtragen, damit niemand
+        // seine Dateien anfassen und von vorn beginnen muss.
+        if (missing.length > 0) {
+            section.appendChild(el('div', 'import-issue-label', [
+                stillMissing.length + ' von ' + missing.length + ' Keys ohne Wert',
+            ]));
+
+            const list = el('div', 'import-fill-list', []);
+            for (const key of missing) {
+                const input = el('input', 'add-input');
+                input.type = 'text';
+                input.placeholder = 'Wert nachtragen (optional)';
+                input.value = (review.fills[env] || {})[key] || '';
+                input.dataset.focusKey = 'fill-' + env + '-' + key;
+                input.oninput = (e) => {
+                    review.fills[env][key] = e.target.value;
+                };
+                input.onblur = () => render();
+
+                list.appendChild(el('div', 'import-fill-row', [
+                    el('span', 'import-fill-key', [key]),
+                    input,
+                ]));
+            }
+            section.appendChild(list);
+        }
+
+        // Unbekannte Keys: der Nutzer entscheidet, ob sie in die Struktur sollen.
+        if (unknown.length > 0) {
+            section.appendChild(el('div', 'import-issue-label', [
+                unknown.length + (unknown.length === 1
+                    ? ' Key ist nicht in der Struktur'
+                    : ' Keys sind nicht in der Struktur'),
+            ]));
+
+            const list = el('div', 'import-adopt-list', []);
+            for (const key of unknown) {
+                const checked = !!review.adopt[key];
+                list.appendChild(el('div', 'import-adopt-row', [
+                    button('row-check' + (checked ? ' is-checked' : ''), [icon('check', 11)], () => {
+                        review.adopt[key] = !checked;
+                        render();
+                    }, 'In die Struktur übernehmen'),
+                    el('span', 'import-fill-key', [key]),
+                    el('span', 'import-adopt-hint', [
+                        checked ? 'wird übernommen' : 'wird verworfen',
+                    ]),
+                ]));
+            }
+            section.appendChild(list);
+        }
+
+        body.appendChild(section);
+    }
+
+    const create = async () => {
+        review.busy = true;
+        render();
+        try {
+            const created = await CreateVaultFromImport(
+                review.name, review.description, review.icon, buildImportEntries(review));
+            state.vaults.push(created);
+            state.vaults.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            state.activeVaultId = created.id;
+            state.importReview = null;
+            toast('Vault mit ' + created.entries.length + ' Keys angelegt', 'success');
+        } catch (err) {
+            toast('Import fehlgeschlagen: ' + describeError(err), 'error');
+        } finally {
+            review.busy = false;
+            render();
+        }
+    };
+
+    return modalShell('modal-wide', [
+        el('div', 'modal-title', ['„' + review.name + '“ importieren']),
+        el('div', 'modal-desc', [
+            anyIssue
+                ? 'Es gibt Abweichungen zwischen den Wert-Dateien und der Struktur. Du kannst sie hier direkt beheben – die Reihenfolge in den Dateien spielt keine Rolle.'
+                : 'Alle Dateien passen zur Struktur.',
+        ]),
+        body,
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Zurück'], () => {
+                state.importReview = null;
+                openCreateVault();
+            }),
+            button('btn btn-primary', [review.busy ? 'Lege an …' : 'Vault anlegen'], create),
+        ]),
+    ], close);
+}
+
+/* ==========================================================================
+   Backup und Wiederherstellung
+   ========================================================================== */
+
+function openBackupModal() {
+    state.backupModal = {
+        view: 'menu',
+        passphrase: '',
+        repeat: '',
+        replace: false,
+        minLength: 12,
+        busy: false,
+    };
+    render();
+
+    MinBackupPassphraseLength()
+        .then(n => {
+            if (state.backupModal) {
+                state.backupModal.minLength = n;
+                render();
+            }
+        })
+        .catch(() => { /* Der Standardwert bleibt stehen. */ });
+}
+
+function backupChoice(iconName, title, text, onClick) {
+    const row = el('div', 'backup-choice', [
+        el('span', 'backup-choice-icon', [icon(iconName, 18)]),
+        el('div', null, [
+            el('div', 'backup-choice-title', [title]),
+            el('div', 'backup-choice-text', [text]),
+        ]),
+    ]);
+    row.onclick = onClick;
+    return row;
+}
+
+function renderBackupModal() {
+    const m = state.backupModal;
+    const close = () => { state.backupModal = null; render(); };
+
+    if (m.view === 'menu') {
+        return modalShell('', [
+            el('div', 'modal-title', ['Backup']),
+            el('div', 'modal-desc', [
+                'Die Vault-Datei ist an dieses Benutzerkonto gebunden. Ein Backup wird stattdessen mit einer Passphrase geschützt und lässt sich dadurch auch auf einem anderen Rechner wiederherstellen.',
+            ]),
+            el('div', 'backup-choice-list', [
+                backupChoice('download', 'Backup erstellen',
+                    'Alle Vaults verschlüsselt in eine Datei schreiben.',
+                    () => { m.view = 'create'; render(); }),
+                backupChoice('upload', 'Backup wiederherstellen',
+                    'Vaults aus einer Backup-Datei zurückholen.',
+                    () => { m.view = 'restore'; render(); }),
+            ]),
+            el('div', 'modal-actions', [button('btn btn-ghost', ['Schließen'], close)]),
+        ], close);
+    }
+
+    if (m.view === 'create') {
+        const pw = el('input', 'modal-input');
+        pw.type = 'password';
+        pw.value = m.passphrase;
+        pw.placeholder = 'mindestens ' + m.minLength + ' Zeichen';
+        pw.dataset.focusKey = 'backup-pw';
+        pw.oninput = (e) => { m.passphrase = e.target.value; };
+
+        const repeat = el('input', 'modal-input');
+        repeat.type = 'password';
+        repeat.value = m.repeat;
+        repeat.placeholder = 'zur Kontrolle wiederholen';
+        repeat.oninput = (e) => { m.repeat = e.target.value; };
+
+        const run = async () => {
+            if (m.passphrase.length < m.minLength) {
+                toast('Die Passphrase braucht mindestens ' + m.minLength + ' Zeichen.', 'error');
+                return;
+            }
+            if (m.passphrase !== m.repeat) {
+                toast('Die beiden Passphrasen stimmen nicht überein.', 'error');
+                return;
+            }
+            try {
+                const path = await ChooseBackupTarget();
+                if (!path) return;
+                m.busy = true;
+                render();
+                const summary = await BackupVaults(path, m.passphrase);
+                state.backupModal = null;
+                toast(summary, 'success');
+            } catch (err) {
+                toast('Backup fehlgeschlagen: ' + describeError(err), 'error');
+            } finally {
+                m.busy = false;
+                render();
+            }
+        };
+
+        return modalShell('', [
+            el('div', 'modal-title', ['Backup erstellen']),
+            el('div', 'modal-warning', [
+                'Ohne die Passphrase lässt sich das Backup von niemandem öffnen – auch nicht von dir. Bewahre sie getrennt von der Datei auf.',
+            ]),
+            el('div', 'modal-field', [el('label', 'modal-label', ['Passphrase']), pw]),
+            el('div', 'modal-field', [el('label', 'modal-label', ['Wiederholen']), repeat]),
+            el('div', 'modal-actions', [
+                button('btn btn-ghost', ['Zurück'], () => { m.view = 'menu'; render(); }),
+                button('btn btn-primary', [m.busy ? 'Sichere …' : 'Datei wählen und sichern'], run),
+            ]),
+        ], close);
+    }
+
+    // Wiederherstellen
+    const pw = el('input', 'modal-input');
+    pw.type = 'password';
+    pw.value = m.passphrase;
+    pw.placeholder = 'Passphrase des Backups';
+    pw.dataset.focusKey = 'restore-pw';
+    pw.oninput = (e) => { m.passphrase = e.target.value; };
+
+    const run = async () => {
+        if (!m.passphrase) {
+            toast('Bitte die Passphrase eingeben.', 'error');
+            return;
+        }
+        try {
+            const path = await ChooseBackupSource();
+            if (!path) return;
+            m.busy = true;
+            render();
+            const result = await RestoreVaults(path, m.passphrase, m.replace);
+            state.backupModal = null;
+            await loadVaults();
+            const added = (result.added || []).length;
+            toast(added + (added === 1 ? ' Vault' : ' Vaults') + ' wiederhergestellt', 'success');
+            for (const skipped of result.skipped || []) {
+                toast('Übersprungen: ' + skipped, 'error');
+            }
+        } catch (err) {
+            toast('Wiederherstellen fehlgeschlagen: ' + describeError(err), 'error');
+        } finally {
+            m.busy = false;
+            render();
+        }
+    };
+
+    return modalShell('', [
+        el('div', 'modal-title', ['Backup wiederherstellen']),
+        el('div', 'modal-desc', [
+            m.replace
+                ? 'Alle vorhandenen Vaults werden durch den Inhalt des Backups ersetzt.'
+                : 'Vaults aus dem Backup werden ergänzt. Solche, deren ID oder Name schon existiert, werden übersprungen.',
+        ]),
+        el('div', 'modal-field', [el('label', 'modal-label', ['Passphrase']), pw]),
+        el('div', 'modal-field', [
+            el('div', 'import-adopt-row', [
+                button('row-check' + (m.replace ? ' is-checked' : ''), [icon('check', 11)], () => {
+                    m.replace = !m.replace;
+                    render();
+                }, 'Vorhandene Vaults ersetzen'),
+                el('span', null, ['Vorhandene Vaults ersetzen statt ergänzen']),
+            ]),
+        ]),
+        m.replace
+            ? el('div', 'modal-warning', ['Das kann nicht rückgängig gemacht werden.'])
+            : null,
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Zurück'], () => { m.view = 'menu'; render(); }),
+            button(m.replace ? 'btn btn-danger-solid' : 'btn btn-primary',
+                [m.busy ? 'Stelle wieder her …' : 'Datei wählen und wiederherstellen'], run),
+        ]),
+    ], close);
+}
+
+/* ==========================================================================
    Kontextmenü und Toasts
    ========================================================================== */
 
@@ -1552,6 +2082,8 @@ function render() {
     app.appendChild(shell);
 
     if (state.vaultModal) app.appendChild(renderVaultModal());
+    if (state.importReview) app.appendChild(renderImportReview());
+    if (state.backupModal) app.appendChild(renderBackupModal());
     if (state.convertModal) app.appendChild(renderConvertModal());
     if (state.duplicateModal) app.appendChild(renderDuplicateModal());
     if (state.confirmModal) app.appendChild(renderConfirmModal());
@@ -1604,6 +2136,8 @@ document.addEventListener('keydown', (e) => {
         if (state.confirmModal) { state.confirmModal = null; render(); return; }
         if (state.duplicateModal) { state.duplicateModal = null; render(); return; }
         if (state.convertModal) { state.convertModal = null; render(); return; }
+        if (state.backupModal) { state.backupModal = null; render(); return; }
+        if (state.importReview) { state.importReview = null; render(); return; }
         if (state.vaultModal) { state.vaultModal = null; render(); return; }
         if (state.editing) { state.editing = null; render(); return; }
         if (state.addPanel) { state.addPanel = null; render(); return; }
