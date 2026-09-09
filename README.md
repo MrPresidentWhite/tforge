@@ -176,6 +176,8 @@ doubles as a warning cue when editing production values.
 
 It allows:
 
+- **creating a vault from existing .env files** (see below)
+
 - searching keys **and** values (`/` or `Ctrl+F`)
 - grouping keys via `GroupPrefix` (e.g. `POSTGRES_` → `POSTGRES_HOST`, `POSTGRES_USER`, …),
   rendered as collapsible blocks
@@ -187,6 +189,53 @@ It allows:
   hidden behind a right‑click
 - masking `secret` values, revealed per row or globally
 - restricting the view to a single environment when the window is narrow
+
+### Importing an existing project
+
+Adopting TForge for a project that already has a `.env` should not mean
+retyping it. The create-vault dialog therefore offers **Aus .env-Dateien**
+next to the blank vault:
+
+- a `.env.example` defines the **structure** — which keys exist, and how they
+  group
+- separate files for `dev`, `staging` and `prod` supply the **values**
+
+Keys are grouped automatically: a prefix becomes a group once **at least two**
+keys share it. In
+
+```
+POSTGRES_HOST=localhost
+POSTGRES_USER=cinevault
+POSTGRES_PASSWORD=
+POSTGRES_DB=cinevault
+POSTGRES_PORT=5432
+```
+
+all five land in a `POSTGRES_` group. A key whose prefix nobody shares stays on
+its own, and the prefix extends as far as every member agrees — so
+`NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SITE_URL` group under `NEXT_PUBLIC_`,
+while a third key sharing only `NEXT_` keeps the group at `NEXT_`. Imported
+keys default to type `secret`.
+
+Each environment file is then checked against the structure, **by key, never by
+position** — the order of the lines in any of the files is irrelevant. Both
+kinds of mismatch are reported, because ignoring either loses data:
+
+- a structure key with **no value** in that environment can be filled in
+  directly in the dialog, so a half-finished `.env` does not mean starting over
+  or editing the file first
+- a key that supplies a value the structure does **not know about** would
+  otherwise be dropped silently, so it is listed with the option to adopt it
+  into the structure
+
+Nothing is written until the review step is confirmed.
+
+### Backup from the GUI
+
+The **Backup** button in the title bar offers the same encrypted backup and
+restore as the CLI, including the passphrase minimum, the read-back
+verification of a freshly written file, and merge-by-default on restore. See
+[Backup & restore](#backup--restore) for what the format guarantees.
 
 ---
 
@@ -687,7 +736,9 @@ everything else.
 - [x] ~~encrypted, passphrase‑protected backup and restore (`--backup` /
       `--restore`), so a lost user profile or a dead disk no longer takes the
       vaults with it~~
-- [ ] backup and restore from the GUI as well; today they are CLI‑only
+- [x] ~~backup and restore from the GUI as well~~
+- [x] ~~create a vault from existing .env files, with automatic grouping and
+      validation against a .env.example~~
 - [ ] **a guard against concurrent writes.** The GUI and the CLI both
       read‑modify‑write the entire file without a lock. Deleting a vault from
       the CLI while the GUI is open brings it back on the GUI’s next save, and
