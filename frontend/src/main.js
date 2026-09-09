@@ -1,1429 +1,1637 @@
 import './style.css';
 import './app.css';
 
-import { ListVaults, CreateVault, GetVault, UpdateVault, DeleteVault, ChooseVaultIcon } from '../wailsjs/go/main/App';
+import {
+    ListVaults,
+    CreateVault,
+    GetVault,
+    UpdateVault,
+    DeleteVault,
+    ChooseVaultIcon,
+    StartupError,
+} from '../wailsjs/go/main/App';
 
 const app = document.querySelector('#app');
 
-function createElement(tag, className, children = []) {
-    const el = document.createElement(tag);
-    if (className) {
-        el.className = className;
-    }
-    for (const child of children) {
-        if (typeof child === 'string') {
-            el.appendChild(document.createTextNode(child));
-        } else if (child instanceof Node) {
-            el.appendChild(child);
-        }
-    }
-    return el;
-}
+/* ==========================================================================
+   Konstanten
+   ========================================================================== */
 
-let state = {
-    vaults: [],
-    activeVaultId: null,
-    activeEnv: 'dev', // 'dev' | 'staging' | 'prod'
-    contextMenu: null, // { x, y, vaultId } | null
-    contextMenuEditor: null, // { x, y } | null
-    modal: null, // { mode: 'create'|'edit', id?, name, description, icon }
-    collapsedGroups: {}, // { [groupPrefix: string]: boolean }
-    newEntryPanel: null, // { mode: 'normal' | 'group', prefix: string, suffix: string, selectedGroup?: string } | null
-    editingField: null, // { index: number, field: 'key' | 'value' | 'type' } | null
-    selectedEntryIndices: new Set(), // Indices in active vault's entries
-    convertToGroupModal: null, // { prefix: string, items: { index, currentKey, suffix }[] } | null
-    contextMenuDuplicateSub: false, // Submenü "Duplizieren" sichtbar
-    duplicateConfirmModal: null, // { target: 'staging'|'prod', keysToOverwrite: string[] } | null
-};
+const ENVS = ['dev', 'staging', 'prod'];
 
-function toggleEntrySelection(index) {
-    if (state.selectedEntryIndices.has(index)) {
-        state.selectedEntryIndices.delete(index);
-    } else {
-        state.selectedEntryIndices.add(index);
-    }
-}
+const ENV_LABEL = { dev: 'DEV', staging: 'STAGING', prod: 'PROD' };
 
-function addBulkRow(panel, mode) {
-    if (!panel) return;
-    if (mode === 'normal') {
-        const keys = Array.isArray(panel.keys) ? [...panel.keys] : [''];
-        keys.push('');
-        state.newEntryPanel = { ...panel, keys, focus: { mode: 'normal', index: keys.length - 1 } };
-    } else {
-        const suffixes = Array.isArray(panel.suffixes) ? [...panel.suffixes] : [''];
-        suffixes.push('');
-        state.newEntryPanel = { ...panel, suffixes, focus: { mode: 'group', index: suffixes.length - 1 } };
-    }
-    render();
-}
+// Feldname im Go-Modell je Umgebung.
+const ENV_FIELD = { dev: 'valueDev', staging: 'valueStage', prod: 'valueProd' };
 
-async function copyToClipboard(text, el) {
-    if (!text) return;
-    try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(text);
-        } else {
-            const temp = document.createElement('textarea');
-            temp.value = text;
-            document.body.appendChild(temp);
-            temp.select();
-            document.execCommand('copy');
-            document.body.removeChild(temp);
-        }
-        if (el) {
-            el.classList.add('glass-field-copied');
-            setTimeout(() => {
-                el.classList.remove('glass-field-copied');
-            }, 800);
-        }
-    } catch (err) {
-        console.error('Copy to clipboard failed', err);
-    }
-}
+const TYPES = ['secret', 'env', 'note'];
 
-const BULLET_FILL_LENGTH = 80;
+/* ==========================================================================
+   Icons (Inline-SVG, Feather-Stil)
+   ========================================================================== */
 
-function maskValueForDisplay(value, type) {
-    if (type === 'secret' && value && value.length > 0) {
-        return '•'.repeat(BULLET_FILL_LENGTH);
-    }
-    return value || '';
-}
+function icon(name, size = 16) {
+    const paths = {
+        search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+        x: '<path d="M18 6L6 18M6 6l12 12"/>',
+        plus: '<path d="M12 5v14M5 12h14"/>',
+        copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+        edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+        eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+        eyeOff: '<path d="M17.9 17.9A10.1 10.1 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.1-5.9M9.9 4.2A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2m-6.7-1.1a3 3 0 1 1-4.2-4.2"/><path d="M1 1l22 22"/>',
+        trash: '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+        chevronDown: '<path d="M6 9l6 6 6-6"/>',
+        more: '<circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/>',
+        check: '<path d="M20 6L9 17l-5-5"/>',
+        vault: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="12" cy="12" r="3.2"/><path d="M12 8.8V7M12 17v-1.8M15.2 12H17M7 12h1.8"/>',
+        key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.8 12.2L21 2m-4 4l3 3m-6-6l3 3"/>',
+        alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/>',
+        arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+        layers: '<path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/>',
+    };
 
-function createEyeToggleSvg(visible) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('width', '18');
-    svg.setAttribute('height', '18');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
     svg.setAttribute('fill', 'none');
     svg.setAttribute('stroke', 'currentColor');
     svg.setAttribute('stroke-width', '2');
     svg.setAttribute('stroke-linecap', 'round');
     svg.setAttribute('stroke-linejoin', 'round');
-    if (visible) {
-        svg.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
-    } else {
-        svg.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-    }
+    // Nur statische, im Code definierte Pfade – nie Benutzerdaten.
+    svg.innerHTML = paths[name] || '';
     return svg;
 }
 
-function createSecretValueDisplay(displayValue, entry, onCopy, onDoubleClick, onCtrlClick) {
-    const wrapper = createElement('div', 'glass-field glass-field-secret', []);
-    const textSpan = document.createElement('span');
-    textSpan.className = 'glass-field-secret-text';
-    textSpan.textContent = maskValueForDisplay(displayValue, entry.type);
-    wrapper.appendChild(textSpan);
+/* ==========================================================================
+   DOM-Helfer
+   ========================================================================== */
 
-    const eyeBtn = document.createElement('button');
-    eyeBtn.type = 'button';
-    eyeBtn.className = 'glass-field-eye-toggle';
-    eyeBtn.setAttribute('aria-label', 'Anzeigen');
-    let isVisible = false;
-    eyeBtn.appendChild(createEyeToggleSvg(false));
-    eyeBtn.onclick = (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        isVisible = !isVisible;
-        textSpan.textContent = isVisible ? (displayValue || '') : maskValueForDisplay(displayValue, entry.type);
-        eyeBtn.replaceChildren(createEyeToggleSvg(isVisible));
-        eyeBtn.setAttribute('aria-label', isVisible ? 'Verbergen' : 'Anzeigen');
-    };
-
-    wrapper.appendChild(eyeBtn);
-    let copyTimeout;
-    wrapper.onclick = (e) => {
-        if (e.target === eyeBtn || eyeBtn.contains(e.target)) return;
-        e.stopPropagation();
-        if (e.ctrlKey && onCtrlClick) {
-            e.preventDefault();
-            onCtrlClick();
-            return;
-        }
-        copyTimeout = setTimeout(() => onCopy(), 250);
-    };
-    wrapper.ondblclick = (e) => {
-        if (e.target === eyeBtn || eyeBtn.contains(e.target)) return;
-        clearTimeout(copyTimeout);
-        onDoubleClick();
-    };
-    return wrapper;
+function el(tag, className, children) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    for (const child of children || []) {
+        if (child === null || child === undefined || child === false) continue;
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+    }
+    return node;
 }
 
-function splitKeyForGroup(entry) {
-    // Gruppierung nur, wenn explizit ein GroupPrefix gesetzt wurde.
-    if (!entry || !entry.groupPrefix) {
-        return { groupKey: '__UNGROUPED__', prefix: '', suffix: entry?.key || '' };
-    }
-    const prefix = entry.groupPrefix;
-    const fullKey = entry.key || '';
-    let suffix = fullKey.startsWith(prefix) ? fullKey.slice(prefix.length) : fullKey;
-    return { groupKey: prefix, prefix, suffix };
+function button(className, children, onClick, title) {
+    const b = el('button', className, children);
+    b.type = 'button';
+    if (title) b.title = title;
+    if (onClick) b.onclick = onClick;
+    return b;
+}
+
+function iconButton(className, iconName, onClick, title, size = 15) {
+    return button(className, [icon(iconName, size)], onClick, title);
+}
+
+/* ==========================================================================
+   State
+   ========================================================================== */
+
+const state = {
+    vaults: [],
+    activeVaultId: null,
+    startupError: '',
+
+    // '' = alle drei Umgebungen nebeneinander, sonst genau eine.
+    envFilter: '',
+    search: '',
+    revealAll: false,
+    revealedRows: new Set(),
+
+    collapsedGroups: {},
+    selected: new Set(),
+
+    // { index, field } mit field aus 'key' | 'dev' | 'staging' | 'prod' | 'type'
+    editing: null,
+
+    addPanel: null,
+    vaultModal: null,
+    convertModal: null,
+    duplicateModal: null,
+    confirmModal: null,
+    contextMenu: null,
+
+    toasts: [],
+};
+
+let toastSeq = 0;
+
+/* ==========================================================================
+   Feedback
+   ========================================================================== */
+
+function toast(message, kind = 'info') {
+    const id = ++toastSeq;
+    state.toasts.push({ id, message, kind });
+    render();
+    setTimeout(() => {
+        state.toasts = state.toasts.filter(t => t.id !== id);
+        render();
+    }, kind === 'error' ? 6000 : 2200);
+}
+
+function describeError(err) {
+    if (!err) return 'Unbekannter Fehler';
+    if (typeof err === 'string') return err;
+    return err.message || String(err);
+}
+
+/* ==========================================================================
+   Datenzugriff
+   ========================================================================== */
+
+function activeVault() {
+    return state.vaults.find(v => v.id === state.activeVaultId) || null;
 }
 
 async function loadVaults() {
     try {
+        state.startupError = await StartupError();
+    } catch (err) {
+        console.error('StartupError konnte nicht gelesen werden', err);
+        state.startupError = '';
+    }
+
+    try {
         state.vaults = await ListVaults();
-        if (state.activeVaultId && !state.vaults.find(v => v.id === state.activeVaultId)) {
+        if (state.activeVaultId && !state.vaults.some(v => v.id === state.activeVaultId)) {
             state.activeVaultId = null;
         }
-        render();
+        if (!state.activeVaultId && state.vaults.length > 0) {
+            state.activeVaultId = state.vaults[0].id;
+        }
     } catch (err) {
-        console.error('Failed to load vaults', err);
+        console.error('Vaults konnten nicht geladen werden', err);
+        toast('Vaults konnten nicht geladen werden: ' + describeError(err), 'error');
+    }
+    render();
+}
+
+// Zentraler Schreibpfad: nimmt die aktuellen Entries, laesst den Aufrufer sie
+// veraendern und schreibt das Ergebnis zurueck. Jeder Fehler wird sichtbar –
+// vorher landeten Speicherfehler nur in der Konsole.
+async function mutateEntries(mutator, successMessage) {
+    const vault = activeVault();
+    if (!vault) return false;
+
+    const entries = (vault.entries || []).map(e => ({ ...e }));
+    const next = mutator(entries);
+    if (next === false) return false;
+
+    try {
+        await UpdateVault({ ...vault, entries: Array.isArray(next) ? next : entries });
+        const fresh = await GetVault(vault.id);
+        state.vaults = state.vaults.map(v => (v.id === fresh.id ? fresh : v));
+        if (successMessage) toast(successMessage, 'success');
+        return true;
+    } catch (err) {
+        console.error('Speichern fehlgeschlagen', err);
+        toast('Speichern fehlgeschlagen: ' + describeError(err), 'error');
+        return false;
     }
 }
 
-function openCreateVaultModal() {
-    state.modal = {
-        mode: 'create',
-        id: null,
-        name: '',
-        description: '',
-        icon: '',
+async function copyValue(text, fieldNode) {
+    if (!text) {
+        toast('Nichts zu kopieren – der Wert ist leer.');
+        return;
+    }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const tmp = document.createElement('textarea');
+            tmp.value = text;
+            document.body.appendChild(tmp);
+            tmp.select();
+            document.execCommand('copy');
+            document.body.removeChild(tmp);
+        }
+        if (fieldNode) {
+            fieldNode.classList.add('is-copied');
+            setTimeout(() => fieldNode.classList.remove('is-copied'), 700);
+        }
+        toast('Kopiert', 'success');
+    } catch (err) {
+        console.error('Kopieren fehlgeschlagen', err);
+        toast('Kopieren fehlgeschlagen', 'error');
+    }
+}
+
+/* ==========================================================================
+   Ableitungen
+   ========================================================================== */
+
+function visibleEnvs() {
+    return state.envFilter ? [state.envFilter] : ENVS;
+}
+
+function entryMatchesSearch(entry) {
+    const q = state.search.trim().toLowerCase();
+    if (!q) return true;
+    if ((entry.key || '').toLowerCase().includes(q)) return true;
+    // Werte werden mitdurchsucht, damit man eine bekannte URL wiederfindet.
+    return ENVS.some(env => (entry[ENV_FIELD[env]] || '').toLowerCase().includes(q));
+}
+
+// Baut die Anzeigestruktur: Gruppen in der Reihenfolge ihres ersten Auftretens,
+// ungruppierte Keys immer als letzter Block.
+function buildGroups(entries) {
+    const map = new Map();
+
+    entries.forEach((entry, index) => {
+        if (!entryMatchesSearch(entry)) return;
+        const prefix = entry.groupPrefix || '';
+        if (!map.has(prefix)) {
+            map.set(prefix, { key: prefix, prefix, isUngrouped: prefix === '', items: [] });
+        }
+        const fullKey = entry.key || '';
+        const suffix = prefix && fullKey.startsWith(prefix) ? fullKey.slice(prefix.length) : fullKey;
+        map.get(prefix).items.push({ entry, index, suffix });
+    });
+
+    const groups = [...map.values()];
+    return [
+        ...groups.filter(g => !g.isUngrouped),
+        ...groups.filter(g => g.isUngrouped),
+    ];
+}
+
+function isGroupCollapsed(groupKey) {
+    // Standard ist aufgeklappt. Frueher war es umgekehrt, wodurch ein frisch
+    // geoeffneter Vault praktisch leer aussah.
+    return state.collapsedGroups[groupKey] === true;
+}
+
+function maskFor(value) {
+    if (!value) return '';
+    return '•'.repeat(Math.min(Math.max(value.length, 6), 18));
+}
+
+function clearSelection() {
+    state.selected = new Set();
+}
+
+/* ==========================================================================
+   Topbar
+   ========================================================================== */
+
+function renderTopbar() {
+    const brand = el('div', 'topbar-brand', [
+        el('div', 'topbar-logo', ['T']),
+        'TForge',
+    ]);
+
+    const searchInput = el('input', 'search-input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Keys und Werte durchsuchen …';
+    searchInput.value = state.search;
+    searchInput.oninput = (e) => {
+        state.search = e.target.value;
+        renderMainOnly();
+    };
+    searchInput.dataset.focusKey = 'search';
+
+    const searchBox = el('div', 'search-box', [
+        el('span', 'search-icon', [icon('search', 15)]),
+        searchInput,
+        state.search
+            ? iconButton('search-clear', 'x', () => {
+                state.search = '';
+                render();
+            }, 'Suche zurücksetzen', 14)
+            : null,
+    ]);
+
+    const revealBtn = button(
+        'btn ' + (state.revealAll ? 'btn-primary' : 'btn-ghost'),
+        [icon(state.revealAll ? 'eyeOff' : 'eye', 15), state.revealAll ? 'Verbergen' : 'Aufdecken'],
+        () => {
+            state.revealAll = !state.revealAll;
+            state.revealedRows = new Set();
+            render();
+        },
+        'Alle Secret-Werte im Klartext anzeigen'
+    );
+
+    return el('div', 'topbar', [brand, searchBox, el('div', 'toolbar-spacer'), revealBtn]);
+}
+
+/* ==========================================================================
+   Sidebar
+   ========================================================================== */
+
+function vaultAvatar(vault, className) {
+    const letter = (vault.name || '').trim().charAt(0).toUpperCase() || 'V';
+    if (vault.icon && vault.icon.trim()) {
+        const img = document.createElement('img');
+        img.className = className;
+        img.src = vault.icon;
+        img.alt = '';
+        img.onerror = () => img.replaceWith(el('div', className, [letter]));
+        return img;
+    }
+    return el('div', className, [letter]);
+}
+
+function renderSidebar() {
+    const list = el('div', 'vault-list');
+
+    if (state.vaults.length === 0) {
+        list.appendChild(el('div', 'vault-empty', [
+            'Noch keine Vaults. Lege unten einen an, um Keys zu verwalten.',
+        ]));
+    } else {
+        for (const vault of state.vaults) {
+            const count = (vault.entries || []).length;
+            const item = el('div', 'vault-item' + (vault.id === state.activeVaultId ? ' is-active' : ''), [
+                vaultAvatar(vault, 'vault-avatar'),
+                el('div', 'vault-item-main', [
+                    el('div', 'vault-item-name', [vault.name || 'Ohne Namen']),
+                    el('div', 'vault-item-meta', [
+                        vault.description ? vault.description : `${count} ${count === 1 ? 'Key' : 'Keys'}`,
+                    ]),
+                ]),
+                iconButton('btn-icon vault-item-menu', 'more', (e) => {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    openVaultMenu(vault.id, rect.right - 4, rect.bottom + 4);
+                }, 'Aktionen', 15),
+            ]);
+
+            item.onclick = () => {
+                if (state.activeVaultId === vault.id) return;
+                state.activeVaultId = vault.id;
+                clearSelection();
+                state.editing = null;
+                state.addPanel = null;
+                state.revealedRows = new Set();
+                render();
+            };
+
+            item.oncontextmenu = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openVaultMenu(vault.id, e.clientX, e.clientY);
+            };
+
+            list.appendChild(item);
+        }
+    }
+
+    return el('div', 'sidebar', [
+        el('div', 'sidebar-head', [
+            el('span', 'sidebar-title', ['Vaults']),
+            el('span', 'sidebar-count', [String(state.vaults.length)]),
+        ]),
+        list,
+        el('div', 'sidebar-foot', [
+            button('btn btn-ghost', [icon('plus', 15), 'Neuer Vault'], openCreateVault),
+        ]),
+    ]);
+}
+
+function openVaultMenu(vaultId, x, y) {
+    state.contextMenu = {
+        x,
+        y,
+        items: [
+            {
+                label: 'Bearbeiten',
+                iconName: 'edit',
+                action: () => openEditVault(vaultId),
+            },
+            { separator: true },
+            {
+                label: 'Vault löschen',
+                iconName: 'trash',
+                danger: true,
+                action: () => requestDeleteVault(vaultId),
+            },
+        ],
     };
     render();
 }
 
-async function handleDeleteVault(id) {
-    if (!confirm('Vault wirklich löschen?')) return;
-    try {
-        await DeleteVault(id);
-        state.vaults = state.vaults.filter(v => v.id !== id);
-        if (state.activeVaultId === id) {
-            state.activeVaultId = null;
-        }
-        render();
-    } catch (err) {
-        console.error('Failed to delete vault', err);
-    }
+/* ==========================================================================
+   Vault-Aktionen
+   ========================================================================== */
+
+function openCreateVault() {
+    state.vaultModal = { mode: 'create', id: null, name: '', description: '', icon: '' };
+    render();
 }
 
-function openEditVaultModal(id) {
-    const existing = state.vaults.find(v => v.id === id);
-    if (!existing) return;
-
-    state.modal = {
+function openEditVault(id) {
+    const vault = state.vaults.find(v => v.id === id);
+    if (!vault) return;
+    state.vaultModal = {
         mode: 'edit',
         id,
-        name: existing.name || '',
-        description: existing.description || '',
-        icon: existing.icon || '',
+        name: vault.name || '',
+        description: vault.description || '',
+        icon: vault.icon || '',
     };
     state.contextMenu = null;
     render();
 }
 
-function hideContextMenu() {
-    if (state.contextMenu || state.contextMenuEditor) {
-        state.contextMenu = null;
-        state.contextMenuEditor = null;
-        state.contextMenuDuplicateSub = false;
-        render();
-    }
+function requestDeleteVault(id) {
+    const vault = state.vaults.find(v => v.id === id);
+    if (!vault) return;
+    const count = (vault.entries || []).length;
+    state.contextMenu = null;
+    state.confirmModal = {
+        title: 'Vault löschen?',
+        description: `„${vault.name}“ enthält ${count} ${count === 1 ? 'Key' : 'Keys'}. `
+            + 'Das Löschen kann nicht rückgängig gemacht werden.',
+        confirmLabel: 'Endgültig löschen',
+        action: async () => {
+            try {
+                await DeleteVault(id);
+                state.vaults = state.vaults.filter(v => v.id !== id);
+                if (state.activeVaultId === id) {
+                    state.activeVaultId = state.vaults.length > 0 ? state.vaults[0].id : null;
+                }
+                clearSelection();
+                toast('Vault gelöscht', 'success');
+            } catch (err) {
+                console.error('Löschen fehlgeschlagen', err);
+                toast('Löschen fehlgeschlagen: ' + describeError(err), 'error');
+            }
+        },
+    };
+    render();
 }
 
-async function duplicateDevToTarget(target) {
-    const active = state.vaults.find(v => v.id === state.activeVaultId);
-    if (!active || !active.entries) return;
-    const indices = Array.from(state.selectedEntryIndices);
-    if (indices.length === 0) return;
-    const entries = [...active.entries];
-    const targetKey = target === 'staging' ? 'valueStage' : 'valueProd';
-    const sourceKey = 'valueDev';
-    indices.forEach(i => {
-        if (entries[i]) {
-            entries[i] = { ...entries[i], [targetKey]: entries[i][sourceKey] || '' };
-        }
-    });
-    try {
-        await UpdateVault({ ...active, entries });
-        const fresh = await GetVault(active.id);
-        state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-        state.selectedEntryIndices = new Set();
-        state.contextMenuEditor = null;
-        state.contextMenuDuplicateSub = false;
-        state.duplicateConfirmModal = null;
-        render();
-    } catch (err) {
-        console.error('Duplicate failed', err);
-    }
-}
+/* ==========================================================================
+   Hauptbereich
+   ========================================================================== */
 
-function openDuplicateToTarget(target) {
-    const active = state.vaults.find(v => v.id === state.activeVaultId);
-    if (!active || !active.entries) return;
-    const indices = Array.from(state.selectedEntryIndices);
-    if (indices.length === 0) return;
-    const targetKey = target === 'staging' ? 'valueStage' : 'valueProd';
-    const keysToOverwrite = indices
-        .map(i => active.entries[i])
-        .filter(e => e && (e[targetKey] || '').trim() !== '')
-        .map(e => e.key || '');
-    state.contextMenuEditor = null;
-    state.contextMenuDuplicateSub = false;
-    if (keysToOverwrite.length > 0) {
-        state.duplicateConfirmModal = { target, keysToOverwrite };
+function renderMain() {
+    const vault = activeVault();
+
+    if (!vault) {
+        return el('div', 'main', [
+            el('div', 'empty', [
+                el('div', 'empty-inner', [
+                    el('div', 'empty-icon', [icon('vault', 44)]),
+                    el('div', 'empty-title', ['Kein Vault ausgewählt']),
+                    el('div', 'empty-text', [
+                        state.vaults.length === 0
+                            ? 'Ein Vault bündelt die Keys eines Projekts – etwa Datenbank-Zugang, API-Schlüssel und Feature-Flags, jeweils mit eigenen Werten für DEV, STAGING und PROD.'
+                            : 'Wähle links einen Vault aus, um seine Keys zu sehen.',
+                    ]),
+                    state.vaults.length === 0
+                        ? button('btn btn-primary', [icon('plus', 15), 'Ersten Vault anlegen'], openCreateVault)
+                        : null,
+                ]),
+            ]),
+        ]);
+    }
+
+    const entries = vault.entries || [];
+    const groups = buildGroups(entries);
+    const shownCount = groups.reduce((sum, g) => sum + g.items.length, 0);
+    const groupCount = groups.filter(g => !g.isUngrouped).length;
+
+    const main = el('div', 'main', []);
+    main.appendChild(renderMainHead(vault, entries.length, shownCount, groupCount));
+    main.appendChild(renderToolbar());
+
+    const scroll = el('div', 'table-scroll' + (state.selected.size > 0 ? ' has-selection' : ''), []);
+    scroll.dataset.scrollKey = 'table';
+
+    if (entries.length === 0) {
+        scroll.appendChild(el('div', 'empty', [
+            el('div', 'empty-inner', [
+                el('div', 'empty-icon', [icon('key', 40)]),
+                el('div', 'empty-title', ['Noch keine Keys']),
+                el('div', 'empty-text', [
+                    'Lege einzelne Keys an oder gleich eine ganze Gruppe mit gemeinsamem Prefix, etwa POSTGRES_ mit HOST, PORT und PASSWORD.',
+                ]),
+                button('btn btn-primary', [icon('plus', 15), 'Key hinzufügen'], () => openAddPanel('single')),
+            ]),
+        ]));
+    } else if (shownCount === 0) {
+        scroll.appendChild(el('div', 'empty', [
+            el('div', 'empty-inner', [
+                el('div', 'empty-icon', [icon('search', 40)]),
+                el('div', 'empty-title', ['Keine Treffer']),
+                el('div', 'empty-text', [`Kein Key oder Wert passt zu „${state.search}“.`]),
+                button('btn btn-ghost', ['Suche zurücksetzen'], () => {
+                    state.search = '';
+                    render();
+                }),
+            ]),
+        ]));
     } else {
-        duplicateDevToTarget(target);
+        scroll.appendChild(renderKeyTable(groups));
+    }
+
+    if (state.addPanel) {
+        scroll.appendChild(renderAddPanel(vault));
+    }
+
+    main.appendChild(scroll);
+    return main;
+}
+
+function renderMainHead(vault, totalKeys, shownKeys, groupCount) {
+    // Bei aktiver Suche beziehen sich beide Zahlen auf die Treffer, sonst
+    // stuende hier die Gesamtzahl der Keys neben der Zahl gefilterter Gruppen.
+    const filtering = state.search.trim() !== '';
+    const parts = [
+        filtering
+            ? `${shownKeys} von ${totalKeys} Keys`
+            : `${totalKeys} ${totalKeys === 1 ? 'Key' : 'Keys'}`,
+    ];
+    if (groupCount > 0) parts.push(`${groupCount} ${groupCount === 1 ? 'Gruppe' : 'Gruppen'}`);
+    if (vault.description) parts.push(vault.description);
+
+    return el('div', 'main-head', [
+        el('div', 'main-title-row', [
+            el('div', null, [
+                el('div', 'main-title', [vault.name || 'Ohne Namen']),
+                el('div', 'main-subtitle', [parts.join(' · ')]),
+            ]),
+            el('div', 'main-title-spacer'),
+            button('btn btn-ghost btn-sm', [icon('edit', 14), 'Bearbeiten'], () => openEditVault(vault.id)),
+        ]),
+    ]);
+}
+
+function renderToolbar() {
+    const filter = el('div', 'env-filter', []);
+
+    const allTab = button('env-tab' + (state.envFilter === '' ? ' is-active' : ''), ['ALLE'], () => {
+        state.envFilter = '';
+        state.editing = null;
+        render();
+    }, 'Alle Umgebungen nebeneinander');
+    filter.appendChild(allTab);
+
+    for (const env of ENVS) {
+        filter.appendChild(button(
+            'env-tab' + (state.envFilter === env ? ' is-active' : ''),
+            [el('span', `env-dot for-${env}`), ENV_LABEL[env]],
+            () => {
+                state.envFilter = env;
+                state.editing = null;
+                render();
+            },
+            `Nur ${ENV_LABEL[env]} anzeigen`
+        ));
+    }
+
+    return el('div', 'main-toolbar', [
+        filter,
+        el('div', 'toolbar-spacer'),
+        button('btn btn-ghost btn-sm', [icon('layers', 14), 'Gruppe'], () => openAddPanel('group')),
+        button('btn btn-primary btn-sm', [icon('plus', 14), 'Key'], () => openAddPanel('single')),
+    ]);
+}
+
+/* ==========================================================================
+   Auswahl-Leiste – ersetzt das frühere versteckte Kontextmenü
+   ========================================================================== */
+
+function renderSelectionBar() {
+    const n = state.selected.size;
+
+    return el('div', 'selection-bar', [
+        el('span', 'selection-count', [`${n} ausgewählt`]),
+        el('span', 'selection-sep'),
+        button('btn btn-ghost btn-sm', [icon('layers', 14), 'Zu Gruppe zusammenfassen'], openConvertModal),
+        button('btn btn-ghost btn-sm', ['DEV', icon('arrowRight', 13), 'STAGING'], () => requestDuplicate('staging')),
+        button('btn btn-ghost btn-sm', ['DEV', icon('arrowRight', 13), 'PROD'], () => requestDuplicate('prod')),
+        el('span', 'selection-sep'),
+        button('btn btn-danger btn-sm', [icon('trash', 14), 'Löschen'], requestDeleteSelected),
+        iconButton('btn-icon', 'x', () => {
+            clearSelection();
+            render();
+        }, 'Auswahl aufheben', 15),
+    ]);
+}
+
+function requestDeleteSelected() {
+    const vault = activeVault();
+    if (!vault) return;
+    const indices = [...state.selected];
+    const keys = indices.map(i => (vault.entries[i] || {}).key || '').filter(Boolean);
+
+    state.confirmModal = {
+        title: `${indices.length} ${indices.length === 1 ? 'Key' : 'Keys'} löschen?`,
+        description: 'Die Werte für alle drei Umgebungen gehen dabei verloren.',
+        keys,
+        confirmLabel: 'Löschen',
+        action: async () => {
+            const drop = new Set(indices);
+            const ok = await mutateEntries(
+                entries => entries.filter((_, i) => !drop.has(i)),
+                `${indices.length} ${indices.length === 1 ? 'Key' : 'Keys'} gelöscht`
+            );
+            if (ok) clearSelection();
+        },
+    };
+    render();
+}
+
+function requestDuplicate(target) {
+    const vault = activeVault();
+    if (!vault) return;
+
+    const indices = [...state.selected];
+    const field = ENV_FIELD[target];
+    const overwrites = indices
+        .map(i => vault.entries[i])
+        .filter(e => e && (e[field] || '').trim() !== '')
+        .map(e => e.key || '');
+
+    if (overwrites.length > 0) {
+        state.duplicateModal = { target, overwrites, count: indices.length };
+        render();
+        return;
+    }
+    applyDuplicate(target);
+}
+
+async function applyDuplicate(target) {
+    const indices = new Set(state.selected);
+    const field = ENV_FIELD[target];
+
+    const ok = await mutateEntries(entries => {
+        entries.forEach((entry, i) => {
+            if (indices.has(i)) entry[field] = entry.valueDev || '';
+        });
+        return entries;
+    }, `Nach ${ENV_LABEL[target]} übernommen`);
+
+    state.duplicateModal = null;
+    if (ok) clearSelection();
+    render();
+}
+
+/* ==========================================================================
+   Key-Tabelle
+   ========================================================================== */
+
+function renderKeyTable(groups) {
+    const envs = visibleEnvs();
+    const table = el('div', 'key-table', []);
+    table.dataset.envs = String(envs.length);
+
+    // Kopfzeile
+    const head = el('div', 'key-row key-row-head', []);
+    head.appendChild(el('div', null, ['']));
+    head.appendChild(el('div', null, ['Key']));
+    for (const env of envs) {
+        // Farbe steckt im Text selbst; ein vorangestellter Punkt haette die
+        // Beschriftung gegen die Werte darunter verschoben.
+        head.appendChild(el('div', `col-head for-${env}`, [ENV_LABEL[env]]));
+    }
+    head.appendChild(el('div', null, ['Typ']));
+    head.appendChild(el('div', null, ['']));
+    table.appendChild(head);
+
+    for (const group of groups) {
+        if (!group.isUngrouped) {
+            const collapsed = isGroupCollapsed(group.key);
+            const header = el('div', 'group-row' + (collapsed ? ' is-collapsed' : ''), [
+                el('span', 'group-caret', [icon('chevronDown', 14)]),
+                el('span', 'group-name', [group.prefix.replace(/_$/, '')]),
+                el('span', 'group-badge', [String(group.items.length)]),
+            ]);
+            header.onclick = () => {
+                state.collapsedGroups[group.key] = !collapsed;
+                render();
+            };
+            table.appendChild(header);
+            if (collapsed) continue;
+        }
+
+        for (const item of group.items) {
+            table.appendChild(renderEntryRow(item, group, envs));
+        }
+    }
+
+    return table;
+}
+
+function renderEntryRow(item, group, envs) {
+    const { entry, index, suffix } = item;
+    const selected = state.selected.has(index);
+
+    const row = el('div', 'key-row key-row-entry' + (selected ? ' is-selected' : ''), []);
+
+    row.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!state.selected.has(index)) {
+            state.selected = new Set([index]);
+        }
+        openRowMenu(e.clientX, e.clientY);
+    };
+
+    // Auswahl
+    const check = button('row-check' + (selected ? ' is-checked' : ''), [icon('check', 11)], (e) => {
+        e.stopPropagation();
+        toggleSelected(index, e.shiftKey);
+        render();
+    }, 'Auswählen');
+    row.appendChild(el('div', 'cell cell-check', [check]));
+
+    // Key
+    row.appendChild(el('div', 'cell cell-key', [renderKeyField(entry, index, group, suffix)]));
+
+    // Werte je Umgebung
+    for (const env of envs) {
+        const cell = el('div', 'cell cell-value', [renderValueField(entry, index, env)]);
+        cell.dataset.env = env;
+        row.appendChild(cell);
+    }
+
+    // Typ
+    row.appendChild(el('div', 'cell cell-type', [renderTypeField(entry, index)]));
+
+    // Zeile löschen
+    row.appendChild(el('div', 'cell cell-actions', [
+        iconButton('btn-icon is-danger', 'trash', () => {
+            state.confirmModal = {
+                title: 'Key löschen?',
+                description: `„${entry.key}“ wird mit allen Werten entfernt.`,
+                confirmLabel: 'Löschen',
+                action: () => mutateEntries(
+                    entries => entries.filter((_, i) => i !== index),
+                    'Key gelöscht'
+                ),
+            };
+            render();
+        }, 'Key löschen', 14),
+    ]));
+
+    return row;
+}
+
+function toggleSelected(index, additive) {
+    if (!additive) {
+        if (state.selected.has(index)) state.selected.delete(index);
+        else state.selected.add(index);
+        return;
+    }
+    // Shift: Bereich vom zuletzt gewaehlten Index bis hier.
+    const existing = [...state.selected];
+    if (existing.length === 0) {
+        state.selected.add(index);
+        return;
+    }
+    const last = existing[existing.length - 1];
+    const [from, to] = last < index ? [last, index] : [index, last];
+    for (let i = from; i <= to; i++) state.selected.add(i);
+}
+
+/* --- Key-Zelle --------------------------------------------------------- */
+
+function renderKeyField(entry, index, group, suffix) {
+    const grouped = !group.isUngrouped && group.prefix;
+    const editing = state.editing && state.editing.index === index && state.editing.field === 'key';
+
+    if (editing) {
+        const input = el('input', 'input');
+        input.type = 'text';
+        input.value = grouped ? suffix : (entry.key || '');
+        input.dataset.focusKey = `key-${index}`;
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            if (e.key === 'Escape') { e.preventDefault(); state.editing = null; render(); }
+        };
+        input.onblur = () => {
+            const raw = input.value.trim();
+            const nextKey = grouped ? group.prefix + raw : raw;
+            state.editing = null;
+            if (!raw || nextKey === entry.key) { render(); return; }
+            mutateEntries(entries => {
+                entries[index] = { ...entries[index], key: nextKey };
+                return entries;
+            }).then(render);
+        };
+        return input;
+    }
+
+    const shown = grouped ? suffix : (entry.key || '');
+    const fullKey = entry.key || '';
+
+    const field = el('div', 'field', []);
+    field.appendChild(el('span', 'field-text is-key' + (shown ? '' : ' is-empty'), [shown || 'ohne Namen']));
+    field.appendChild(el('div', 'field-actions', [
+        iconButton('field-btn', 'copy', (e) => {
+            e.stopPropagation();
+            copyValue(fullKey, field);
+        }, 'Key kopieren', 13),
+    ]));
+    field.title = fullKey;
+    field.onclick = (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            toggleSelected(index, false);
+            render();
+            return;
+        }
+        state.editing = { index, field: 'key' };
+        render();
+    };
+    return field;
+}
+
+/* --- Wert-Zelle -------------------------------------------------------- */
+
+function renderValueField(entry, index, env) {
+    const editing = state.editing && state.editing.index === index && state.editing.field === env;
+    const value = entry[ENV_FIELD[env]] || '';
+
+    if (editing) {
+        const input = el('input', `input for-${env}`);
+        input.type = 'text';
+        input.value = value;
+        input.dataset.focusKey = `${env}-${index}`;
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            if (e.key === 'Escape') { e.preventDefault(); state.editing = null; render(); }
+            if (e.key === 'Tab') {
+                // Tab springt zur naechsten Umgebung derselben Zeile.
+                const envs = visibleEnvs();
+                const pos = envs.indexOf(env);
+                const nextEnv = envs[e.shiftKey ? pos - 1 : pos + 1];
+                if (nextEnv) {
+                    e.preventDefault();
+                    input.dataset.moveTo = nextEnv;
+                    input.blur();
+                }
+            }
+        };
+        input.onblur = () => {
+            const nextValue = input.value;
+            const moveTo = input.dataset.moveTo;
+            state.editing = moveTo ? { index, field: moveTo } : null;
+            if (nextValue === value) { render(); return; }
+            mutateEntries(entries => {
+                entries[index] = { ...entries[index], [ENV_FIELD[env]]: nextValue };
+                return entries;
+            }).then(render);
+        };
+        return input;
+    }
+
+    const isSecret = entry.type === 'secret';
+    const revealed = state.revealAll || state.revealedRows.has(index);
+    const display = isSecret && !revealed ? maskFor(value) : value;
+
+    const field = el('div', 'field', []);
+    field.appendChild(el(
+        'span',
+        'field-text' + (value ? (isSecret && !revealed ? ' is-masked' : '') : ' is-empty'),
+        [value ? display : 'leer']
+    ));
+
+    const actions = el('div', 'field-actions', []);
+    if (isSecret && value) {
+        actions.appendChild(iconButton('field-btn', revealed ? 'eyeOff' : 'eye', (e) => {
+            e.stopPropagation();
+            if (state.revealedRows.has(index)) state.revealedRows.delete(index);
+            else state.revealedRows.add(index);
+            render();
+        }, revealed ? 'Verbergen' : 'Anzeigen', 13));
+    }
+    if (value) {
+        actions.appendChild(iconButton('field-btn', 'copy', (e) => {
+            e.stopPropagation();
+            copyValue(value, field);
+        }, 'Wert kopieren', 13));
+    }
+    field.appendChild(actions);
+
+    field.onclick = (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            toggleSelected(index, false);
+            render();
+            return;
+        }
+        state.editing = { index, field: env };
+        render();
+    };
+    return field;
+}
+
+/* --- Typ-Zelle --------------------------------------------------------- */
+
+function renderTypeField(entry, index) {
+    const editing = state.editing && state.editing.index === index && state.editing.field === 'type';
+    const type = entry.type || 'env';
+
+    if (editing) {
+        const select = el('select', 'select');
+        select.dataset.focusKey = `type-${index}`;
+        for (const t of TYPES) {
+            const opt = el('option', null, [t]);
+            opt.value = t;
+            if (t === type) opt.selected = true;
+            select.appendChild(opt);
+        }
+        select.onchange = () => {
+            const next = select.value;
+            state.editing = null;
+            mutateEntries(entries => {
+                entries[index] = { ...entries[index], type: next };
+                return entries;
+            }).then(render);
+        };
+        select.onblur = () => {
+            state.editing = null;
+            render();
+        };
+        return select;
+    }
+
+    return button(`type-badge for-${type}`, [type], (e) => {
+        e.stopPropagation();
+        state.editing = { index, field: 'type' };
+        render();
+    }, 'Typ ändern');
+}
+
+/* --- Zeilen-Kontextmenü (Beschleuniger, nicht der einzige Weg) --------- */
+
+function openRowMenu(x, y) {
+    const n = state.selected.size;
+    state.contextMenu = {
+        x,
+        y,
+        items: [
+            { label: 'Zu Gruppe zusammenfassen', iconName: 'layers', action: openConvertModal },
+            { label: 'DEV nach STAGING kopieren', iconName: 'arrowRight', action: () => requestDuplicate('staging') },
+            { label: 'DEV nach PROD kopieren', iconName: 'arrowRight', action: () => requestDuplicate('prod') },
+            { separator: true },
+            {
+                label: `${n} ${n === 1 ? 'Key' : 'Keys'} löschen`,
+                iconName: 'trash',
+                danger: true,
+                action: requestDeleteSelected,
+            },
+        ],
+    };
+    render();
+}
+
+/* ==========================================================================
+   Panel: neue Keys anlegen
+   ========================================================================== */
+
+function openAddPanel(mode) {
+    const vault = activeVault();
+    if (!vault) return;
+
+    const prefixes = existingPrefixes(vault);
+    state.addPanel = {
+        mode,
+        prefix: mode === 'group' ? (prefixes[0] || '') : '',
+        customPrefix: prefixes.length === 0,
+        keys: [''],
+        focusIndex: 0,
+    };
+    render();
+}
+
+function existingPrefixes(vault) {
+    const seen = [];
+    for (const e of vault.entries || []) {
+        if (e.groupPrefix && !seen.includes(e.groupPrefix)) seen.push(e.groupPrefix);
+    }
+    return seen;
+}
+
+function renderAddPanel(vault) {
+    const panel = state.addPanel;
+    const prefixes = existingPrefixes(vault);
+    const wrap = el('div', 'add-panel', []);
+
+    // Modus-Umschalter
+    const segmented = el('div', 'segmented', [
+        button('segmented-btn' + (panel.mode === 'single' ? ' is-active' : ''), ['Einzelne Keys'], () => {
+            state.addPanel = { ...panel, mode: 'single' };
+            render();
+        }),
+        button('segmented-btn' + (panel.mode === 'group' ? ' is-active' : ''), ['Gruppe'], () => {
+            state.addPanel = { ...panel, mode: 'group', prefix: panel.prefix || prefixes[0] || '', customPrefix: prefixes.length === 0 };
+            render();
+        }),
+    ]);
+
+    wrap.appendChild(el('div', 'add-panel-head', [
+        segmented,
+        el('div', 'toolbar-spacer'),
+        iconButton('btn-icon', 'x', () => {
+            state.addPanel = null;
+            render();
+        }, 'Schließen', 15),
+    ]));
+
+    const body = el('div', 'add-panel-body', []);
+
+    // Gruppen-Prefix
+    if (panel.mode === 'group') {
+        const prefixWrap = el('div', null, [el('div', 'add-field-label', ['Gruppen-Prefix'])]);
+
+        if (prefixes.length > 0 && !panel.customPrefix) {
+            const row = el('div', 'add-key-row', []);
+            const select = el('select', 'select');
+            select.style.height = '32px';
+            select.style.flex = '1';
+            for (const p of prefixes) {
+                const opt = el('option', null, [p]);
+                opt.value = p;
+                if (p === panel.prefix) opt.selected = true;
+                select.appendChild(opt);
+            }
+            const customOpt = el('option', null, ['Neues Prefix …']);
+            customOpt.value = '';
+            select.appendChild(customOpt);
+            const customIndex = select.options.length - 1;
+            select.onchange = () => {
+                if (select.selectedIndex === customIndex) {
+                    state.addPanel = { ...panel, customPrefix: true, prefix: '' };
+                } else {
+                    state.addPanel = { ...panel, prefix: select.value };
+                }
+                render();
+            };
+            row.appendChild(select);
+            prefixWrap.appendChild(row);
+        } else {
+            const input = el('input', 'add-input');
+            input.type = 'text';
+            input.placeholder = 'z. B. POSTGRES_';
+            input.value = panel.prefix;
+            input.dataset.focusKey = 'add-prefix';
+            input.oninput = (e) => { panel.prefix = e.target.value; };
+            prefixWrap.appendChild(input);
+        }
+        body.appendChild(prefixWrap);
+    }
+
+    // Key-Zeilen
+    const keysWrap = el('div', null, [
+        el('div', 'add-field-label', [panel.mode === 'group' ? 'Keys in der Gruppe' : 'Keys']),
+    ]);
+
+    panel.keys.forEach((value, i) => {
+        const row = el('div', 'add-key-row', []);
+        if (panel.mode === 'group' && panel.prefix) {
+            row.appendChild(el('div', 'add-prefix-tag', [panel.prefix]));
+        }
+
+        const input = el('input', 'add-input');
+        input.type = 'text';
+        input.placeholder = panel.mode === 'group' ? 'HOST' : 'NEXT_PUBLIC_API_URL';
+        input.value = value;
+        input.dataset.focusKey = `add-key-${i}`;
+        input.oninput = (e) => { panel.keys[i] = e.target.value; };
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey || i === panel.keys.length - 1) {
+                    panel.keys.push('');
+                    panel.focusIndex = panel.keys.length - 1;
+                    render();
+                } else {
+                    submitAddPanel();
+                }
+            }
+        };
+        row.appendChild(input);
+
+        if (panel.keys.length > 1) {
+            row.appendChild(iconButton('btn-icon', 'x', () => {
+                panel.keys.splice(i, 1);
+                render();
+            }, 'Zeile entfernen', 14));
+        }
+        keysWrap.appendChild(row);
+    });
+
+    keysWrap.appendChild(button('btn btn-ghost btn-sm', [icon('plus', 13), 'Weitere Zeile'], () => {
+        panel.keys.push('');
+        panel.focusIndex = panel.keys.length - 1;
+        render();
+    }));
+
+    body.appendChild(keysWrap);
+    wrap.appendChild(body);
+
+    wrap.appendChild(el('div', 'add-panel-foot', [
+        button('btn btn-primary btn-sm', ['Anlegen'], submitAddPanel),
+        button('btn btn-ghost btn-sm', ['Abbrechen'], () => {
+            state.addPanel = null;
+            render();
+        }),
+        el('span', 'add-hint', ['Enter fügt eine weitere Zeile hinzu']),
+    ]));
+
+    return wrap;
+}
+
+async function submitAddPanel() {
+    const panel = state.addPanel;
+    if (!panel) return;
+
+    const prefix = panel.mode === 'group' ? panel.prefix.trim() : '';
+    if (panel.mode === 'group' && !prefix) {
+        toast('Bitte ein Gruppen-Prefix angeben.', 'error');
+        return;
+    }
+
+    const names = panel.keys.map(k => k.trim()).filter(Boolean);
+    if (names.length === 0) {
+        toast('Bitte mindestens einen Key angeben.', 'error');
+        return;
+    }
+
+    const vault = activeVault();
+    const existingKeys = new Set((vault.entries || []).map(e => e.key));
+    const additions = [];
+    const duplicates = [];
+
+    for (const name of names) {
+        const fullKey = prefix + name;
+        if (existingKeys.has(fullKey)) {
+            duplicates.push(fullKey);
+            continue;
+        }
+        existingKeys.add(fullKey);
+        additions.push({
+            key: fullKey,
+            valueDev: '',
+            valueStage: '',
+            valueProd: '',
+            type: 'secret',
+            groupPrefix: prefix,
+        });
+    }
+
+    if (additions.length === 0) {
+        toast(`Bereits vorhanden: ${duplicates.join(', ')}`, 'error');
+        return;
+    }
+
+    const ok = await mutateEntries(
+        entries => [...entries, ...additions],
+        `${additions.length} ${additions.length === 1 ? 'Key' : 'Keys'} angelegt`
+    );
+
+    if (ok) {
+        if (duplicates.length > 0) {
+            toast(`Übersprungen, weil schon vorhanden: ${duplicates.join(', ')}`, 'error');
+        }
+        state.addPanel = null;
     }
     render();
 }
 
-function renderVaultList() {
-    const container = createElement('div', 'vault-list');
+/* ==========================================================================
+   Modals
+   ========================================================================== */
 
-    const header = createElement('div', 'vault-list-header', [
-        createElement('div', 'vault-list-title', ['Vaults']),
-        (() => {
-            const btn = createElement('button', 'btn-primary', ['+ Neu']);
-            btn.onclick = openCreateVaultModal;
-            return btn;
-        })(),
-    ]);
-
-    const list = createElement('div', 'vault-list-items');
-    if (state.vaults.length === 0) {
-        list.appendChild(createElement('div', 'vault-list-empty', ['Noch keine Vaults angelegt.']));
-    } else {
-        for (const v of state.vaults) {
-            const hasIcon = v.icon && v.icon.trim();
-
-            const iconNode = hasIcon
-                ? (() => {
-                    const img = document.createElement('img');
-                    img.className = 'vault-list-item-icon-img';
-                    img.src = v.icon;
-                    img.alt = v.name || 'Vault';
-                    img.onerror = () => {
-                        img.replaceWith(
-                            createElement('div', 'vault-list-item-icon-placeholder', [
-                                (v.name && v.name.trim().length > 0 ? v.name.trim()[0].toUpperCase() : 'V'),
-                            ])
-                        );
-                    };
-                    return img;
-                })()
-                : createElement('div', 'vault-list-item-icon-placeholder', [
-                    (v.name && v.name.trim().length > 0 ? v.name.trim()[0].toUpperCase() : 'V'),
-                ]);
-
-            const item = createElement('div', 'vault-list-item' + (v.id === state.activeVaultId ? ' active' : ''), [
-                iconNode,
-                createElement('div', 'vault-list-item-main', [
-                    createElement('div', 'vault-list-item-name', [v.name]),
-                    createElement('div', 'vault-list-item-description', [v.description || '']),
-                ]),
-            ]);
-            item.onclick = () => {
-                state.activeVaultId = v.id;
-                state.selectedEntryIndices = new Set();
-                render();
-            };
-            item.oncontextmenu = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                state.contextMenu = {
-                    x: e.clientX,
-                    y: e.clientY,
-                    vaultId: v.id,
-                };
-                render();
-            };
-            list.appendChild(item);
-        }
-    }
-
-    container.appendChild(header);
-    container.appendChild(list);
-    return container;
+function modalShell(className, children, onClose) {
+    const modal = el('div', 'modal ' + (className || ''), children);
+    const overlay = el('div', 'modal-overlay', [modal]);
+    overlay.onclick = (e) => {
+        if (e.target === overlay) onClose();
+    };
+    return overlay;
 }
 
-function renderVaultEditor() {
-    const container = createElement('div', 'vault-editor');
-    const active = state.vaults.find(v => v.id === state.activeVaultId);
+function renderVaultModal() {
+    const m = state.vaultModal;
+    const close = () => { state.vaultModal = null; render(); };
 
-    if (!active) {
-        container.appendChild(createElement('div', 'vault-editor-empty', [
-            'Wähle links einen Vault aus oder erstelle einen neuen.',
-        ]));
-        return container;
-    }
+    const nameInput = el('input', 'modal-input');
+    nameInput.type = 'text';
+    nameInput.value = m.name;
+    nameInput.placeholder = 'z. B. Shop-Backend';
+    nameInput.dataset.focusKey = 'vault-name';
+    nameInput.oninput = (e) => { m.name = e.target.value; };
 
-    const titleRow = createElement('div', 'vault-editor-header', [
-        createElement('div', 'vault-editor-title', [active.name]),
-        (() => {
-            const btn = createElement('button', 'btn-danger', ['Löschen']);
-            btn.onclick = () => handleDeleteVault(active.id);
-            return btn;
-        })(),
-    ]);
+    const descInput = el('textarea', 'modal-textarea');
+    descInput.value = m.description;
+    descInput.placeholder = 'Wofür ist dieser Vault?';
+    descInput.oninput = (e) => { m.description = e.target.value; };
 
-    const envSwitcher = createElement('div', 'env-switcher', []);
-    ['dev', 'staging', 'prod'].forEach(env => {
-        const labelMap = { dev: 'DEV', staging: 'STAGING', prod: 'PROD' };
-        const pill = createElement('button', 'env-pill' + (state.activeEnv === env ? ' active' : ''), [
-            labelMap[env],
-        ]);
-        pill.onclick = () => {
-            state.activeEnv = env;
-            render();
-        };
-        envSwitcher.appendChild(pill);
-    });
+    const preview = m.icon
+        ? (() => {
+            const img = document.createElement('img');
+            img.className = 'modal-icon-preview';
+            img.src = m.icon;
+            img.alt = '';
+            return img;
+        })()
+        : el('div', 'modal-icon-preview', [(m.name || '').trim().charAt(0).toUpperCase() || 'V']);
 
-    container.appendChild(titleRow);
-    container.appendChild(envSwitcher);
-
-    const entries = active.entries || [];
-
-    // Gruppierung nach explizitem GroupPrefix
-    const groups = {};
-    entries.forEach((entry, index) => {
-        const { groupKey, prefix, suffix } = splitKeyForGroup(entry);
-        if (!groups[groupKey]) {
-            groups[groupKey] = { prefix, items: [] };
+    const save = async () => {
+        const name = (m.name || '').trim();
+        if (!name) {
+            toast('Bitte einen Namen angeben.', 'error');
+            return;
         }
-        groups[groupKey].items.push({ entry, index, suffix });
-    });
+        try {
+            if (m.mode === 'create') {
+                const created = await CreateVault(name, m.description || '');
+                if (m.icon) {
+                    created.icon = m.icon;
+                    await UpdateVault(created);
+                }
+                const fresh = await GetVault(created.id);
+                state.vaults.push(fresh);
+                state.vaults.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                state.activeVaultId = fresh.id;
+                toast('Vault angelegt', 'success');
+            } else {
+                const existing = state.vaults.find(v => v.id === m.id);
+                if (!existing) { close(); return; }
+                await UpdateVault({ ...existing, name, description: m.description || '', icon: m.icon || '' });
+                const fresh = await GetVault(m.id);
+                state.vaults = state.vaults.map(v => (v.id === fresh.id ? fresh : v));
+                toast('Gespeichert', 'success');
+            }
+            close();
+        } catch (err) {
+            console.error('Vault speichern fehlgeschlagen', err);
+            toast('Speichern fehlgeschlagen: ' + describeError(err), 'error');
+        }
+    };
 
-    // Reihenfolge der Gruppen wie angelegt
-    const groupOrder = Object.keys(groups);
-
-    function createHeaderRow() {
-        return createElement('div', 'vault-editor-row vault-editor-row-header', [
-            createElement('div', 'col-key', ['Key']),
-            createElement('div', 'col-value', [
-                'Value ',
-                (() => {
-                    const span = createElement('span', 'env-label-header', [
-                        state.activeEnv === 'dev' ? 'DEV' : state.activeEnv === 'staging' ? 'STAGING' : 'PROD',
-                    ]);
-                    return span;
-                })(),
+    return modalShell('', [
+        el('div', 'modal-title', [m.mode === 'create' ? 'Neuer Vault' : 'Vault bearbeiten']),
+        el('div', 'modal-desc', ['Ein Vault bündelt die Keys eines Projekts.']),
+        el('div', 'modal-field', [el('label', 'modal-label', ['Name']), nameInput]),
+        el('div', 'modal-field', [el('label', 'modal-label', ['Beschreibung']), descInput]),
+        el('div', 'modal-field', [
+            el('label', 'modal-label', ['Icon']),
+            el('div', 'modal-icon-row', [
+                preview,
+                button('btn btn-ghost btn-sm', ['Bild wählen'], async () => {
+                    try {
+                        const path = await ChooseVaultIcon();
+                        if (path) { m.icon = path; render(); }
+                    } catch (err) {
+                        toast('Icon konnte nicht geladen werden: ' + describeError(err), 'error');
+                    }
+                }),
+                m.icon ? button('btn btn-ghost btn-sm', ['Entfernen'], () => { m.icon = ''; render(); }) : null,
             ]),
-            createElement('div', 'col-type', ['Typ']),
-            createElement('div', 'col-actions', ['']),
-        ]);
-    }
+        ]),
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Abbrechen'], close),
+            button('btn btn-primary', [m.mode === 'create' ? 'Anlegen' : 'Speichern'], save),
+        ]),
+    ], close);
+}
 
-    // Alle Gruppen in einer Card mit globalem Header
-    const groupedKeys = groupOrder.filter(gk => gk !== '__UNGROUPED__');
-    if (groupedKeys.length > 0) {
-        const groupsCard = createElement('div', 'vault-editor-table vault-editor-table-groups', []);
-        groupsCard.appendChild(createElement('div', 'vault-editor-section-title', ['Gruppen']));
-        groupsCard.appendChild(createHeaderRow());
+function openConvertModal() {
+    const vault = activeVault();
+    if (!vault || state.selected.size === 0) return;
 
-        groupedKeys.forEach(gk => {
-            const group = groups[gk];
-            const isUngrouped = false;
+    const indices = [...state.selected].sort((a, b) => a - b);
+    state.contextMenu = null;
+    state.convertModal = {
+        prefix: '',
+        items: indices.map(i => ({
+            index: i,
+            currentKey: vault.entries[i].key || '',
+            suffix: vault.entries[i].key || '',
+        })),
+    };
+    render();
+}
 
-            const collapsed = state.collapsedGroups[gk] !== false;
-            const groupHeader = createElement('div', 'vault-editor-group-header', []);
-            const toggleBtn = createElement('button', 'group-toggle-btn', [
-                collapsed ? '▶' : '▼',
-            ]);
-            toggleBtn.onclick = () => {
-                state.collapsedGroups[gk] = !collapsed;
-                render();
-            };
-            const title = createElement('div', 'group-title', [group.prefix.replace(/_$/, '')]);
-            groupHeader.appendChild(toggleBtn);
-            groupHeader.appendChild(title);
-            groupsCard.appendChild(groupHeader);
+function renderConvertModal() {
+    const m = state.convertModal;
+    const close = () => { state.convertModal = null; render(); };
 
-            if (!collapsed) {
-                group.items.forEach(({ entry, index, suffix }) => {
-                    const row = createElement('div', 'vault-editor-row' + (state.selectedEntryIndices.has(index) ? ' vault-editor-row-selected' : ''), []);
-                    row.oncontextmenu = (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        state.contextMenuEditor = { x: e.clientX, y: e.clientY };
-                        render();
-                    };
-
-            const isEditingKey = state.editingField && state.editingField.index === index && state.editingField.field === 'key';
-            const isEditingValue = state.editingField && state.editingField.index === index && state.editingField.field === 'value';
-            const isEditingType = state.editingField && state.editingField.index === index && state.editingField.field === 'type';
-
-            const keyWrapper = createElement('div', 'key-group-wrapper', []);
-            let keyInput;
-            if (isEditingKey) {
-                if (!isUngrouped && group.prefix) {
-                    keyInput = createElement('input', 'input key-suffix-input');
-                    keyInput.value = suffix;
-                } else {
-                    keyInput = createElement('input', 'input');
-                    keyInput.value = entry.key;
-                }
-                keyWrapper.appendChild(keyInput);
-            } else {
-                const displayText = (!isUngrouped && group.prefix) ? (suffix || '') : (entry.key || '');
-                const keyDisplay = createElement('div', 'glass-field', [displayText || '']);
-                let keyCopyTimeout;
-                keyDisplay.onclick = (e) => {
-                    e.stopPropagation();
-                    if (e.ctrlKey) {
-                        toggleEntrySelection(index);
-                        e.preventDefault();
-                        render();
-                        return;
-                    }
-                    const fullKeyForCopy = (!isUngrouped && group.prefix)
-                        ? (group.prefix + (suffix || ''))
-                        : (entry.key || '');
-                    keyCopyTimeout = setTimeout(() => copyToClipboard(fullKeyForCopy, keyDisplay), 250);
-                };
-                keyDisplay.ondblclick = () => {
-                    clearTimeout(keyCopyTimeout);
-                    state.editingField = { index, field: 'key' };
-                    render();
-                };
-                keyWrapper.appendChild(keyDisplay);
+    const prefixInput = el('input', 'modal-input');
+    prefixInput.type = 'text';
+    prefixInput.placeholder = 'POSTGRES_';
+    prefixInput.value = m.prefix;
+    prefixInput.dataset.focusKey = 'convert-prefix';
+    prefixInput.oninput = (e) => {
+        m.prefix = e.target.value;
+        // Wenn der Key mit dem Prefix beginnt, Suffix automatisch kuerzen.
+        for (const item of m.items) {
+            if (m.prefix && item.currentKey.startsWith(m.prefix)) {
+                item.suffix = item.currentKey.slice(m.prefix.length);
             }
-
-            let valueInput;
-            if (isEditingValue) {
-                valueInput = createElement('input', 'input');
-                if (state.activeEnv === 'dev') {
-                    valueInput.value = entry.valueDev || '';
-                } else if (state.activeEnv === 'staging') {
-                    valueInput.value = entry.valueStage || '';
-                } else {
-                    valueInput.value = entry.valueProd || '';
-                }
-            }
-
-            let typeSelect;
-            if (isEditingType) {
-                typeSelect = createElement('select', 'select');
-                ['env', 'secret', 'note'].forEach(t => {
-                    const opt = createElement('option', '', [t]);
-                    opt.value = t;
-                    if (t === entry.type) {
-                        opt.selected = true;
-                    }
-                    typeSelect.appendChild(opt);
-                });
-            }
-
-            const deleteBtn = createElement('button', 'btn-danger btn-small', ['✕']);
-            deleteBtn.onclick = async () => {
-                const updated = { ...active };
-                const newEntries = [...entries];
-                newEntries.splice(index, 1);
-                updated.entries = newEntries;
-                try {
-                    await UpdateVault(updated);
-                    const fresh = await GetVault(active.id);
-                    state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                    render();
-                } catch (err) {
-                    console.error('Failed to update vault', err);
-                }
-            };
-
-            const handleChange = async () => {
-                const updated = { ...active };
-                const newEntries = [...entries];
-                const existing = newEntries[index] || {};
-                const fullKey = (!isUngrouped && group.prefix)
-                    ? (group.prefix + (keyInput ? (keyInput.value || '') : suffix || ''))
-                    : (keyInput ? keyInput.value : entry.key);
-
-                const nextEntry = {
-                    key: fullKey,
-                    valueDev: existing.valueDev || '',
-                    valueStage: existing.valueStage || '',
-                    valueProd: existing.valueProd || '',
-                    type: typeSelect ? typeSelect.value : existing.type,
-                    groupPrefix: (!isUngrouped && group.prefix) ? group.prefix : '',
-                };
-                if (state.activeEnv === 'dev') {
-                    nextEntry.valueDev = valueInput ? valueInput.value : entry.valueDev || '';
-                } else if (state.activeEnv === 'staging') {
-                    nextEntry.valueStage = valueInput ? valueInput.value : entry.valueStage || '';
-                } else {
-                    nextEntry.valueProd = valueInput ? valueInput.value : entry.valueProd || '';
-                }
-                newEntries[index] = nextEntry;
-                updated.entries = newEntries;
-                try {
-                    await UpdateVault(updated);
-                    const fresh = await GetVault(active.id);
-                    state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                    state.editingField = null;
-                    render();
-                } catch (err) {
-                    console.error('Failed to update vault', err);
-                }
-            };
-
-            if (isEditingKey && keyInput) {
-                keyInput.onblur = handleChange;
-                keyInput.onkeydown = (e) => {
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleChange();
-                    }
-                };
-                setTimeout(() => keyInput.focus(), 0);
-            }
-
-            const valueCol = (() => {
-                if (isEditingValue && valueInput) {
-                    valueInput.onblur = handleChange;
-                    valueInput.onkeydown = (e) => {
-                        if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleChange();
-                        }
-                    };
-                    setTimeout(() => valueInput.focus(), 0);
-                    return createElement('div', 'col-value', [valueInput]);
-                }
-                let displayValue = '';
-                if (state.activeEnv === 'dev') {
-                    displayValue = entry.valueDev || '';
-                } else if (state.activeEnv === 'staging') {
-                    displayValue = entry.valueStage || '';
-                } else {
-                    displayValue = entry.valueProd || '';
-                }
-                let valueDisplay;
-                if (entry.type === 'secret') {
-                    valueDisplay = createSecretValueDisplay(displayValue, entry,
-                        () => copyToClipboard(displayValue || '', valueDisplay),
-                        () => { state.editingField = { index, field: 'value' }; render(); },
-                        () => { toggleEntrySelection(index); render(); });
-                } else {
-                    valueDisplay = createElement('div', 'glass-field', [maskValueForDisplay(displayValue, entry.type) || '']);
-                    let valueCopyTimeout;
-                    valueDisplay.onclick = (e) => {
-                        e.stopPropagation();
-                        if (e.ctrlKey) {
-                            toggleEntrySelection(index);
-                            e.preventDefault();
-                            render();
-                            return;
-                        }
-                        valueCopyTimeout = setTimeout(() => copyToClipboard(displayValue || '', valueDisplay), 250);
-                    };
-                    valueDisplay.ondblclick = () => {
-                        clearTimeout(valueCopyTimeout);
-                        state.editingField = { index, field: 'value' };
-                        render();
-                    };
-                }
-                return createElement('div', 'col-value', [valueDisplay]);
-            })();
-
-            const typeCol = (() => {
-                if (isEditingType && typeSelect) {
-                    typeSelect.onchange = handleChange;
-                    typeSelect.onblur = () => {
-                        state.editingField = null;
-                        render();
-                    };
-                    return createElement('div', 'col-type', [typeSelect]);
-                }
-                const typeDisplay = createElement('div', 'glass-field', [entry.type || 'env']);
-                typeDisplay.ondblclick = () => {
-                    state.editingField = { index, field: 'type' };
-                    render();
-                };
-                return createElement('div', 'col-type', [typeDisplay]);
-            })();
-
-            row.appendChild(createElement('div', 'col-key', [keyWrapper]));
-            row.appendChild(valueCol);
-            row.appendChild(typeCol);
-            row.appendChild(createElement('div', 'col-actions', [deleteBtn]));
-            groupsCard.appendChild(row);
-                });
-            }
-        });
-
-        container.appendChild(groupsCard);
-    }
-
-    // Für einzelne (ungegroupte) Keys: eine gemeinsame Card mit globalem Header
-    const ungroupedGroup = groups['__UNGROUPED__'];
-    if (ungroupedGroup && ungroupedGroup.items.length > 0) {
-        const card = createElement('div', 'vault-editor-table', []);
-        card.appendChild(createElement('div', 'vault-editor-section-title', ['Einzelne Keys']));
-        card.appendChild(createHeaderRow());
-
-        ungroupedGroup.items.forEach(({ entry, index, suffix }) => {
-            const row = createElement('div', 'vault-editor-row' + (state.selectedEntryIndices.has(index) ? ' vault-editor-row-selected' : ''), []);
-            row.oncontextmenu = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                state.contextMenuEditor = { x: e.clientX, y: e.clientY };
-                render();
-            };
-
-            const isEditingKey = state.editingField && state.editingField.index === index && state.editingField.field === 'key';
-            const isEditingValue = state.editingField && state.editingField.index === index && state.editingField.field === 'value';
-            const isEditingType = state.editingField && state.editingField.index === index && state.editingField.field === 'type';
-
-            const keyWrapper = createElement('div', 'key-group-wrapper', []);
-            let keyInput;
-            if (isEditingKey) {
-                keyInput = createElement('input', 'input');
-                keyInput.value = entry.key;
-                keyWrapper.appendChild(keyInput);
-            } else {
-                const displayText = entry.key || '';
-                const keyDisplay = createElement('div', 'glass-field', [displayText || '']);
-                let keyCopyTimeout;
-                keyDisplay.onclick = (e) => {
-                    e.stopPropagation();
-                    if (e.ctrlKey) {
-                        toggleEntrySelection(index);
-                        e.preventDefault();
-                        render();
-                        return;
-                    }
-                    const fullKeyForCopy = entry.key || '';
-                    keyCopyTimeout = setTimeout(() => copyToClipboard(fullKeyForCopy, keyDisplay), 250);
-                };
-                keyDisplay.ondblclick = () => {
-                    clearTimeout(keyCopyTimeout);
-                    state.editingField = { index, field: 'key' };
-                    render();
-                };
-                keyWrapper.appendChild(keyDisplay);
-            }
-
-            let valueInput;
-            if (isEditingValue) {
-                valueInput = createElement('input', 'input');
-                if (state.activeEnv === 'dev') {
-                    valueInput.value = entry.valueDev || '';
-                } else if (state.activeEnv === 'staging') {
-                    valueInput.value = entry.valueStage || '';
-                } else {
-                    valueInput.value = entry.valueProd || '';
-                }
-            }
-
-            let typeSelect;
-            if (isEditingType) {
-                typeSelect = createElement('select', 'select');
-                ['env', 'secret', 'note'].forEach(t => {
-                    const opt = createElement('option', '', [t]);
-                    opt.value = t;
-                    if (t === entry.type) {
-                        opt.selected = true;
-                    }
-                    typeSelect.appendChild(opt);
-                });
-            }
-
-            const deleteBtn = createElement('button', 'btn-danger btn-small', ['✕']);
-            deleteBtn.onclick = async () => {
-                const updated = { ...active };
-                const newEntries = [...entries];
-                newEntries.splice(index, 1);
-                updated.entries = newEntries;
-                try {
-                    await UpdateVault(updated);
-                    const fresh = await GetVault(active.id);
-                    state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                    render();
-                } catch (err) {
-                    console.error('Failed to update vault', err);
-                }
-            };
-
-            const handleChange = async () => {
-                const updated = { ...active };
-                const newEntries = [...entries];
-                const existing = newEntries[index] || {};
-                const fullKey = keyInput ? keyInput.value : entry.key;
-
-                const nextEntry = {
-                    key: fullKey,
-                    valueDev: existing.valueDev || '',
-                    valueStage: existing.valueStage || '',
-                    valueProd: existing.valueProd || '',
-                    type: typeSelect ? typeSelect.value : existing.type,
-                    groupPrefix: '',
-                };
-                if (state.activeEnv === 'dev') {
-                    nextEntry.valueDev = valueInput ? valueInput.value : entry.valueDev || '';
-                } else if (state.activeEnv === 'staging') {
-                    nextEntry.valueStage = valueInput ? valueInput.value : entry.valueStage || '';
-                } else {
-                    nextEntry.valueProd = valueInput ? valueInput.value : entry.valueProd || '';
-                }
-                newEntries[index] = nextEntry;
-                updated.entries = newEntries;
-                try {
-                    await UpdateVault(updated);
-                    const fresh = await GetVault(active.id);
-                    state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                    state.editingField = null;
-                    render();
-                } catch (err) {
-                    console.error('Failed to update vault', err);
-                }
-            };
-
-            if (isEditingKey && keyInput) {
-                keyInput.onblur = handleChange;
-                keyInput.onkeydown = (e) => {
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleChange();
-                    }
-                };
-                setTimeout(() => keyInput.focus(), 0);
-            }
-
-            const valueCol = (() => {
-                if (isEditingValue && valueInput) {
-                    valueInput.onblur = handleChange;
-                    valueInput.onkeydown = (e) => {
-                        if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleChange();
-                        }
-                    };
-                    setTimeout(() => valueInput.focus(), 0);
-                    return createElement('div', 'col-value', [valueInput]);
-                }
-                let displayValue = '';
-                if (state.activeEnv === 'dev') {
-                    displayValue = entry.valueDev || '';
-                } else if (state.activeEnv === 'staging') {
-                    displayValue = entry.valueStage || '';
-                } else {
-                    displayValue = entry.valueProd || '';
-                }
-                let valueDisplay;
-                if (entry.type === 'secret') {
-                    valueDisplay = createSecretValueDisplay(displayValue, entry,
-                        () => copyToClipboard(displayValue || '', valueDisplay),
-                        () => { state.editingField = { index, field: 'value' }; render(); },
-                        () => { toggleEntrySelection(index); render(); });
-                } else {
-                    valueDisplay = createElement('div', 'glass-field', [maskValueForDisplay(displayValue, entry.type) || '']);
-                    let valueCopyTimeout;
-                    valueDisplay.onclick = (e) => {
-                        e.stopPropagation();
-                        if (e.ctrlKey) {
-                            toggleEntrySelection(index);
-                            e.preventDefault();
-                            render();
-                            return;
-                        }
-                        valueCopyTimeout = setTimeout(() => copyToClipboard(displayValue || '', valueDisplay), 250);
-                    };
-                    valueDisplay.ondblclick = () => {
-                        clearTimeout(valueCopyTimeout);
-                        state.editingField = { index, field: 'value' };
-                        render();
-                    };
-                }
-                return createElement('div', 'col-value', [valueDisplay]);
-            })();
-
-            const typeCol = (() => {
-                if (isEditingType && typeSelect) {
-                    typeSelect.onchange = handleChange;
-                    typeSelect.onblur = () => {
-                        state.editingField = null;
-                        render();
-                    };
-                    return createElement('div', 'col-type', [typeSelect]);
-                }
-                const typeDisplay = createElement('div', 'glass-field', [entry.type || 'env']);
-                typeDisplay.ondblclick = () => {
-                    state.editingField = { index, field: 'type' };
-                    render();
-                };
-                return createElement('div', 'col-type', [typeDisplay]);
-            })();
-
-            row.appendChild(createElement('div', 'col-key', [keyWrapper]));
-            row.appendChild(valueCol);
-            row.appendChild(typeCol);
-            row.appendChild(createElement('div', 'col-actions', [deleteBtn]));
-            card.appendChild(row);
-        });
-        container.appendChild(card);
-    }
-
-    const addRowBtn = createElement('button', 'btn-secondary', ['+ Eintrag hinzufügen']);
-    addRowBtn.onclick = () => {
-        state.newEntryPanel = state.newEntryPanel
-            ? null
-            : { mode: 'normal', prefix: '', selectedGroup: '', keys: [''], suffixes: [''], focus: { mode: 'normal', index: 0 } };
+        }
         render();
     };
 
-    const addPanel = (() => {
-        if (!state.newEntryPanel) return null;
-        const wrap = createElement('div', 'new-entry-panel', []);
+    const list = el('div', 'modal-list', []);
+    m.items.forEach((item, i) => {
+        const input = el('input', 'modal-input');
+        input.type = 'text';
+        input.value = item.suffix;
+        input.style.fontFamily = 'var(--font-mono)';
+        input.style.fontSize = '12px';
+        input.oninput = (e) => { m.items[i].suffix = e.target.value; };
+        list.appendChild(el('div', 'modal-list-row', [
+            el('span', 'modal-list-key', [item.currentKey]),
+            el('span', 'modal-arrow', [icon('arrowRight', 14)]),
+            input,
+        ]));
+    });
 
-        const modeToggle = createElement('div', 'new-entry-mode-toggle', []);
-        const normalBtn = createElement(
-            'button',
-            'chip' + (state.newEntryPanel.mode === 'normal' ? ' chip-active' : ''),
-            ['Normaler Key']
-        );
-        const groupBtn = createElement(
-            'button',
-            'chip' + (state.newEntryPanel.mode === 'group' ? ' chip-active' : ''),
-            ['Gruppe (Prefix)']
-        );
-        normalBtn.onclick = () => {
-            state.newEntryPanel = { ...state.newEntryPanel, mode: 'normal' };
-            render();
-        };
-        groupBtn.onclick = () => {
-            state.newEntryPanel = { ...state.newEntryPanel, mode: 'group' };
-            render();
-        };
-        modeToggle.appendChild(normalBtn);
-        modeToggle.appendChild(groupBtn);
-
-        wrap.appendChild(modeToggle);
-
-        const formRow = createElement('div', 'new-entry-form-row', []);
-        if (state.newEntryPanel.mode === 'group') {
-            // existierende Gruppen-Prefixe sammeln
-            const existingGroupPrefixes = [];
-            const seen = new Set();
-            (active.entries || []).forEach(e => {
-                if (e.groupPrefix && !seen.has(e.groupPrefix)) {
-                    seen.add(e.groupPrefix);
-                    existingGroupPrefixes.push(e.groupPrefix);
-                }
-            });
-
-            const hasExistingGroups = existingGroupPrefixes.length > 0;
-            const CUSTOM_VALUE = '__CUSTOM__';
-
-            const groupCol = createElement('div', 'new-entry-group-col', []);
-
-            if (hasExistingGroups) {
-                const select = createElement('select', 'select new-entry-group-select');
-
-                const currentSelected = state.newEntryPanel.selectedGroup || existingGroupPrefixes[0];
-                // wenn noch kein Prefix gesetzt ist, initial auf Auswahl setzen
-                if (!state.newEntryPanel.prefix && currentSelected && currentSelected !== CUSTOM_VALUE) {
-                    state.newEntryPanel.prefix = currentSelected;
-                }
-
-                existingGroupPrefixes.forEach(prefix => {
-                    const opt = createElement('option', '', [prefix.replace(/_$/, '')]);
-                    opt.value = prefix;
-                    if (prefix === currentSelected) {
-                        opt.selected = true;
-                    }
-                    select.appendChild(opt);
-                });
-
-                const customOpt = createElement('option', '', ['CUSTOM']);
-                customOpt.value = CUSTOM_VALUE;
-                if (currentSelected === CUSTOM_VALUE) {
-                    customOpt.selected = true;
-                }
-                select.appendChild(customOpt);
-
-                select.onchange = (e) => {
-                    const val = e.target.value;
-                    state.newEntryPanel = {
-                        ...state.newEntryPanel,
-                        selectedGroup: val,
-                    };
-                    if (val !== CUSTOM_VALUE) {
-                        state.newEntryPanel.prefix = val;
-                    }
-                    render();
-                };
-
-                groupCol.appendChild(select);
-
-                const isCustom = (state.newEntryPanel.selectedGroup || currentSelected) === CUSTOM_VALUE;
-                if (isCustom) {
-                    const prefixInput = createElement('input', 'input new-entry-prefix');
-                    prefixInput.placeholder = 'Prefix, z.B. POSTGRES_';
-                    prefixInput.value = state.newEntryPanel.prefix || '';
-                    prefixInput.oninput = (e) => {
-                        state.newEntryPanel = { ...state.newEntryPanel, prefix: e.target.value };
-                    };
-                    groupCol.appendChild(prefixInput);
-                }
-            } else {
-                // keine existierenden Gruppen -> wie vorher nur Prefix-Eingabe
-                const prefixInput = createElement('input', 'input new-entry-prefix');
-                prefixInput.placeholder = 'Prefix, z.B. POSTGRES_';
-                prefixInput.value = state.newEntryPanel.prefix || '';
-                prefixInput.oninput = (e) => {
-                    state.newEntryPanel = { ...state.newEntryPanel, prefix: e.target.value };
-                };
-                groupCol.appendChild(prefixInput);
-            }
-
-            formRow.appendChild(groupCol);
-            const suffixList = createElement('div', 'new-entry-keys-list', []);
-            const suffixes = Array.isArray(state.newEntryPanel.suffixes) ? state.newEntryPanel.suffixes : [state.newEntryPanel.suffix || ''];
-            suffixes.forEach((val, i) => {
-                const suffixInput = createElement('input', 'input new-entry-suffix');
-                suffixInput.placeholder = 'Key in Gruppe, z.B. HOST';
-                suffixInput.value = val || '';
-                suffixInput.oninput = (e) => {
-                    const next = [...suffixes];
-                    next[i] = e.target.value;
-                    state.newEntryPanel = { ...state.newEntryPanel, suffixes: next };
-                };
-                suffixInput.onkeydown = (e) => {
-                    if (e.key === 'Enter' && e.shiftKey) {
-                        e.preventDefault();
-                        addBulkRow(state.newEntryPanel, 'group');
-                    }
-                };
-                if (state.newEntryPanel.focus && state.newEntryPanel.focus.mode === 'group' && state.newEntryPanel.focus.index === i) {
-                    setTimeout(() => suffixInput.focus(), 0);
-                }
-                suffixList.appendChild(suffixInput);
-            });
-            formRow.appendChild(suffixList);
-        } else {
-            const list = createElement('div', 'new-entry-keys-list new-entry-keys-list-full', []);
-            const keys = Array.isArray(state.newEntryPanel.keys) ? state.newEntryPanel.keys : [state.newEntryPanel.suffix || ''];
-            keys.forEach((val, i) => {
-                const keyInput = createElement('input', 'input new-entry-key');
-                keyInput.placeholder = 'Key, z.B. NEXT_PUBLIC_API_URL';
-                keyInput.value = val || '';
-                keyInput.oninput = (e) => {
-                    const next = [...keys];
-                    next[i] = e.target.value;
-                    state.newEntryPanel = { ...state.newEntryPanel, keys: next };
-                };
-                keyInput.onkeydown = (e) => {
-                    if (e.key === 'Enter' && e.shiftKey) {
-                        e.preventDefault();
-                        addBulkRow(state.newEntryPanel, 'normal');
-                    }
-                };
-                if (state.newEntryPanel.focus && state.newEntryPanel.focus.mode === 'normal' && state.newEntryPanel.focus.index === i) {
-                    setTimeout(() => keyInput.focus(), 0);
-                }
-                list.appendChild(keyInput);
-            });
-            formRow.appendChild(list);
+    const apply = async () => {
+        const prefix = m.prefix.trim();
+        if (!prefix) {
+            toast('Bitte ein Prefix angeben.', 'error');
+            return;
         }
+        const byIndex = new Map(m.items.map(it => [it.index, it.suffix.trim()]));
+        const ok = await mutateEntries(entries => {
+            byIndex.forEach((suffix, i) => {
+                if (!entries[i]) return;
+                entries[i] = { ...entries[i], key: prefix + suffix, groupPrefix: prefix };
+            });
+            return entries;
+        }, 'Zu Gruppe zusammengefasst');
 
-        const createBtn = createElement('button', 'btn-primary new-entry-create-btn', ['Erstellen']);
-        createBtn.onclick = async () => {
-            const panel = state.newEntryPanel;
-            if (!panel) return;
+        state.convertModal = null;
+        if (ok) clearSelection();
+        render();
+    };
 
-            const updated = { ...active };
-            const newEntries = [...(active.entries || [])];
+    return modalShell('modal-wide', [
+        el('div', 'modal-title', ['Zu Gruppe zusammenfassen']),
+        el('div', 'modal-desc', [
+            'Die ausgewählten Keys bekommen ein gemeinsames Prefix und erscheinen künftig als ein zusammenklappbarer Block.',
+        ]),
+        el('div', 'modal-field', [el('label', 'modal-label', ['Prefix']), prefixInput]),
+        el('div', 'modal-field', [el('label', 'modal-label', ['Neue Key-Namen']), list]),
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Abbrechen'], close),
+            button('btn btn-primary', ['Zusammenfassen'], apply),
+        ]),
+    ], close);
+}
 
-            if (panel.mode === 'group') {
-                const finalPrefix = (panel.prefix || '').trim();
-                const suffixes = Array.isArray(panel.suffixes) ? panel.suffixes : [(panel.suffix || '')];
-                const cleanSuffixes = suffixes.map(s => (s || '').trim()).filter(Boolean);
-                if (!finalPrefix || cleanSuffixes.length === 0) return;
-                cleanSuffixes.forEach(suf => {
-                    newEntries.push({
-                        key: finalPrefix + suf,
-                        valueDev: '',
-                        valueStage: '',
-                        valueProd: '',
-                        type: 'secret',
-                        groupPrefix: finalPrefix,
-                    });
-                });
-            } else {
-                const keys = Array.isArray(panel.keys) ? panel.keys : [(panel.suffix || '')];
-                const cleanKeys = keys.map(k => (k || '').trim()).filter(Boolean);
-                if (cleanKeys.length === 0) return;
-                cleanKeys.forEach(key => {
-                    newEntries.push({
-                        key,
-                        valueDev: '',
-                        valueStage: '',
-                        valueProd: '',
-                        type: 'secret',
-                        groupPrefix: '',
-                    });
-                });
-            }
+function renderDuplicateModal() {
+    const m = state.duplicateModal;
+    const close = () => { state.duplicateModal = null; render(); };
+    const label = ENV_LABEL[m.target];
 
-            updated.entries = newEntries;
-            try {
-                await UpdateVault(updated);
-                const fresh = await GetVault(active.id);
-                state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                state.newEntryPanel = null;
+    return modalShell('', [
+        el('div', 'modal-title', [`DEV-Werte nach ${label} übernehmen?`]),
+        el('div', 'modal-warning', [
+            `${m.overwrites.length} von ${m.count} ausgewählten Keys haben in ${label} bereits einen Wert. `
+            + 'Diese Werte werden überschrieben.',
+            el('div', 'modal-key-chips', m.overwrites.map(k => el('span', 'modal-key-chip', [k]))),
+        ]),
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Abbrechen'], close),
+            button('btn btn-primary', [`Nach ${label} übernehmen`], () => applyDuplicate(m.target)),
+        ]),
+    ], close);
+}
+
+function renderConfirmModal() {
+    const m = state.confirmModal;
+    const close = () => { state.confirmModal = null; render(); };
+
+    return modalShell('', [
+        el('div', 'modal-title', [m.title]),
+        el('div', 'modal-desc', [m.description]),
+        m.keys && m.keys.length > 0
+            ? el('div', 'modal-key-chips', m.keys.slice(0, 12).map(k => el('span', 'modal-key-chip', [k])))
+            : null,
+        el('div', 'modal-actions', [
+            button('btn btn-ghost', ['Abbrechen'], close),
+            button('btn btn-danger-solid', [m.confirmLabel || 'Löschen'], async () => {
+                state.confirmModal = null;
+                await m.action();
                 render();
-            } catch (err) {
-                console.error('Failed to update vault', err);
-            }
+            }),
+        ]),
+    ], close);
+}
+
+/* ==========================================================================
+   Kontextmenü und Toasts
+   ========================================================================== */
+
+function renderContextMenu() {
+    const m = state.contextMenu;
+    const menu = el('div', 'context-menu', []);
+
+    for (const item of m.items) {
+        if (item.separator) {
+            menu.appendChild(el('div', 'context-sep'));
+            continue;
+        }
+        const node = el('div', 'context-item' + (item.danger ? ' is-danger' : ''), [
+            icon(item.iconName, 14),
+            item.label,
+        ]);
+        node.onclick = () => {
+            state.contextMenu = null;
+            item.action();
         };
-
-        wrap.appendChild(formRow);
-        wrap.appendChild(createBtn);
-        return wrap;
-    })();
-
-    container.appendChild(addRowBtn);
-    if (addPanel) {
-        container.appendChild(addPanel);
+        menu.appendChild(node);
     }
-    return container;
+
+    // Erst nach dem Einhaengen positionieren, damit das Menue nicht aus dem
+    // Fenster laeuft.
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    menu.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+        const rect = menu.getBoundingClientRect();
+        const x = Math.min(m.x, window.innerWidth - rect.width - 8);
+        const y = Math.min(m.y, window.innerHeight - rect.height - 8);
+        menu.style.left = `${Math.max(8, x)}px`;
+        menu.style.top = `${Math.max(8, y)}px`;
+        menu.style.visibility = 'visible';
+    });
+
+    return menu;
+}
+
+function renderToasts() {
+    const stack = el('div', 'toast-stack', []);
+    for (const t of state.toasts) {
+        stack.appendChild(el('div', `toast is-${t.kind}`, [
+            t.kind !== 'info' ? el('span', 'toast-icon', [icon(t.kind === 'error' ? 'alert' : 'check', 15)]) : null,
+            t.message,
+        ]));
+    }
+    return stack;
+}
+
+function renderStartupBanner() {
+    return el('div', 'startup-banner', [
+        el('span', 'startup-banner-icon', [icon('alert', 18)]),
+        el('div', null, [
+            el('div', 'startup-banner-title', ['Vault-Daten konnten nicht gelesen werden']),
+            el('div', 'startup-banner-text', [
+                'Änderungen werden nicht gespeichert, damit die vorhandene verschlüsselte Datei nicht überschrieben wird. '
+                + 'Häufigste Ursache: die Vaults wurden mit einem anderen Protector verschlüsselt, etwa ein altes master.key-Setup, das jetzt unter DPAPI läuft.',
+            ]),
+            el('div', 'startup-banner-detail', [state.startupError]),
+        ]),
+    ]);
+}
+
+/* ==========================================================================
+   Render
+   ========================================================================== */
+
+// Fokus und Scrollposition ueberleben den Neuaufbau des DOM.
+function captureUiState() {
+    const active = document.activeElement;
+    const focusKey = active && active.dataset ? active.dataset.focusKey : null;
+    const selStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+    const scroller = document.querySelector('[data-scroll-key="table"]');
+    return { focusKey, selStart, scrollTop: scroller ? scroller.scrollTop : 0 };
+}
+
+function restoreUiState(snapshot) {
+    const scroller = document.querySelector('[data-scroll-key="table"]');
+    if (scroller && snapshot.scrollTop) scroller.scrollTop = snapshot.scrollTop;
+
+    let target = null;
+    if (state.editing) {
+        const key = state.editing.field === 'key' || state.editing.field === 'type'
+            ? `${state.editing.field}-${state.editing.index}`
+            : `${state.editing.field}-${state.editing.index}`;
+        target = document.querySelector(`[data-focus-key="${key}"]`);
+    }
+    if (!target && state.addPanel && typeof state.addPanel.focusIndex === 'number') {
+        target = document.querySelector(`[data-focus-key="add-key-${state.addPanel.focusIndex}"]`);
+        state.addPanel.focusIndex = null;
+    }
+    if (!target && snapshot.focusKey) {
+        target = document.querySelector(`[data-focus-key="${snapshot.focusKey}"]`);
+    }
+    if (!target && state.vaultModal) {
+        target = document.querySelector('[data-focus-key="vault-name"]');
+    }
+
+    if (target) {
+        target.focus();
+        if (typeof target.setSelectionRange === 'function') {
+            if (snapshot.focusKey === target.dataset.focusKey && snapshot.selStart !== null) {
+                target.setSelectionRange(snapshot.selStart, snapshot.selStart);
+            } else {
+                target.setSelectionRange(target.value.length, target.value.length);
+            }
+        }
+    }
 }
 
 function render() {
-    app.innerHTML = '';
+    const snapshot = captureUiState();
 
-    const shell = createElement('div', 'vault-shell');
+    app.replaceChildren();
 
-    const left = renderVaultList();
-    const right = renderVaultEditor();
-
-    shell.appendChild(left);
-    shell.appendChild(right);
-
+    const shell = el('div', 'app-shell', []);
+    if (state.startupError) shell.appendChild(renderStartupBanner());
+    shell.appendChild(renderTopbar());
+    shell.appendChild(el('div', 'app-body', [renderSidebar(), renderMain()]));
     app.appendChild(shell);
 
-    if (state.contextMenu) {
-        const menu = createElement('div', 'context-menu', []);
-        menu.style.left = `${state.contextMenu.x}px`;
-        menu.style.top = `${state.contextMenu.y}px`;
+    if (state.vaultModal) app.appendChild(renderVaultModal());
+    if (state.convertModal) app.appendChild(renderConvertModal());
+    if (state.duplicateModal) app.appendChild(renderDuplicateModal());
+    if (state.confirmModal) app.appendChild(renderConfirmModal());
+    if (state.selected.size > 0) app.appendChild(renderSelectionBar());
+    if (state.contextMenu) app.appendChild(renderContextMenu());
+    if (state.toasts.length > 0) app.appendChild(renderToasts());
 
-        const editItem = createElement('div', 'context-menu-item', ['Bearbeiten']);
-        editItem.onclick = () => openEditVaultModal(state.contextMenu.vaultId);
-
-        const deleteItem = createElement('div', 'context-menu-item context-menu-item-danger', ['Löschen']);
-        deleteItem.onclick = () => {
-            const id = state.contextMenu.vaultId;
-            state.contextMenu = null;
-            render();
-            handleDeleteVault(id);
-        };
-
-        menu.appendChild(editItem);
-        menu.appendChild(deleteItem);
-        app.appendChild(menu);
-    }
-
-    if (state.contextMenuEditor) {
-        const wrapper = createElement('div', 'context-menu-wrapper', []);
-        wrapper.style.left = `${state.contextMenuEditor.x}px`;
-        wrapper.style.top = `${state.contextMenuEditor.y}px`;
-        wrapper.onmouseleave = () => {
-            state.contextMenuDuplicateSub = false;
-            render();
-        };
-
-        const menu = createElement('div', 'context-menu', []);
-
-        const hasSelection = state.selectedEntryIndices && state.selectedEntryIndices.size > 0;
-        const convertItem = createElement('div', 'context-menu-item' + (!hasSelection ? ' context-menu-item-disabled' : ''), ['In Gruppe konvertieren']);
-        convertItem.onclick = () => {
-            if (!hasSelection) return;
-            const active = state.vaults.find(v => v.id === state.activeVaultId);
-            if (!active || !active.entries) return;
-            const indices = Array.from(state.selectedEntryIndices).sort((a, b) => a - b);
-            state.convertToGroupModal = {
-                prefix: '',
-                items: indices.map(i => ({ index: i, currentKey: active.entries[i].key || '', suffix: active.entries[i].key || '' })),
-            };
-            state.contextMenuEditor = null;
-            render();
-        };
-
-        const duplicateItem = createElement('div', 'context-menu-item context-menu-item-with-sub' + (!hasSelection ? ' context-menu-item-disabled' : ''), ['Duplizieren']);
-        duplicateItem.onmouseenter = () => {
-            if (!hasSelection) return;
-            state.contextMenuDuplicateSub = true;
-            render();
-        };
-        duplicateItem.onclick = (e) => { e.stopPropagation(); };
-
-        const clearItem = createElement('div', 'context-menu-item', ['Auswahl aufheben']);
-        clearItem.onclick = () => {
-            state.selectedEntryIndices = new Set();
-            state.contextMenuEditor = null;
-            render();
-        };
-
-        menu.appendChild(convertItem);
-        menu.appendChild(duplicateItem);
-        menu.appendChild(clearItem);
-        wrapper.appendChild(menu);
-
-        if (state.contextMenuDuplicateSub) {
-            const sub = createElement('div', 'context-menu context-menu-sub', []);
-            const stagingItem = createElement('div', 'context-menu-item', ['Nach STAGING']);
-            stagingItem.onclick = () => openDuplicateToTarget('staging');
-            const prodItem = createElement('div', 'context-menu-item', ['Nach PROD']);
-            prodItem.onclick = () => openDuplicateToTarget('prod');
-            sub.appendChild(stagingItem);
-            sub.appendChild(prodItem);
-            wrapper.appendChild(sub);
-        }
-
-        app.appendChild(wrapper);
-    }
-
-    if (state.modal) {
-        const overlay = createElement('div', 'modal-overlay', []);
-        const modal = createElement('div', 'modal', []);
-
-        const titleText = state.modal.mode === 'create' ? 'Neuen Vault erstellen' : 'Vault bearbeiten';
-        const title = createElement('div', 'modal-title', [titleText]);
-
-        const form = createElement('div', 'modal-form', []);
-
-        const nameLabel = createElement('label', 'modal-label', ['Name']);
-        const nameInput = createElement('input', 'input modal-input', []);
-        nameInput.value = state.modal.name;
-        nameInput.oninput = (e) => {
-            state.modal.name = e.target.value;
-        };
-
-        const descLabel = createElement('label', 'modal-label', ['Beschreibung']);
-        const descInput = createElement('textarea', 'input modal-textarea', []);
-        descInput.value = state.modal.description;
-        descInput.oninput = (e) => {
-            state.modal.description = e.target.value;
-        };
-
-        const iconRow = createElement('div', 'modal-icon-row', []);
-        const iconLabel = createElement('div', 'modal-label', ['Icon (optional)']);
-        const iconPreview = state.modal.icon
-            ? (() => {
-                const img = document.createElement('img');
-                img.className = 'vault-list-item-icon-img modal-icon-preview';
-                img.src = state.modal.icon;
-                img.alt = 'Vault Icon';
-                return img;
-            })()
-            : createElement('div', 'vault-list-item-icon-placeholder modal-icon-placeholder', [
-                (state.modal.name && state.modal.name.trim().length > 0
-                    ? state.modal.name.trim()[0].toUpperCase()
-                    : 'V'),
-            ]);
-
-        const iconButton = createElement('button', 'btn-secondary modal-icon-button', ['Icon wählen']);
-        iconButton.onclick = async (e) => {
-            e.preventDefault();
-            try {
-                const iconPath = await ChooseVaultIcon();
-                if (iconPath) {
-                    state.modal.icon = iconPath;
-                    render();
-                }
-            } catch (err) {
-                console.error('Choose icon failed', err);
-            }
-        };
-
-        iconRow.appendChild(iconPreview);
-        iconRow.appendChild(iconButton);
-
-        form.appendChild(nameLabel);
-        form.appendChild(nameInput);
-        form.appendChild(descLabel);
-        form.appendChild(descInput);
-        form.appendChild(iconLabel);
-        form.appendChild(iconRow);
-
-        const actions = createElement('div', 'modal-actions', []);
-        const cancelBtn = createElement('button', 'btn-secondary', ['Abbrechen']);
-        cancelBtn.onclick = (e) => {
-            e.preventDefault();
-            state.modal = null;
-            render();
-        };
-
-        const saveBtn = createElement('button', 'btn-primary', ['Speichern']);
-        saveBtn.onclick = async (e) => {
-            e.preventDefault();
-            const name = (state.modal.name || '').trim();
-            if (!name) {
-                return;
-            }
-            const description = state.modal.description || '';
-            const icon = state.modal.icon || '';
-
-            try {
-                if (state.modal.mode === 'create') {
-                    const v = await CreateVault(name, description);
-                    if (icon) {
-                        v.icon = icon;
-                        await UpdateVault(v);
-                    }
-                    state.vaults.push(v);
-                    state.activeVaultId = v.id;
-                } else if (state.modal.mode === 'edit') {
-                    const existing = state.vaults.find(v => v.id === state.modal.id);
-                    if (!existing) {
-                        state.modal = null;
-                        render();
-                        return;
-                    }
-                    const updated = { ...existing, name, description, icon };
-                    await UpdateVault(updated);
-                    const fresh = await GetVault(existing.id);
-                    state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                }
-                state.modal = null;
-                render();
-            } catch (err) {
-                console.error('Failed to save vault', err);
-            }
-        };
-
-        actions.appendChild(cancelBtn);
-        actions.appendChild(saveBtn);
-
-        modal.appendChild(title);
-        modal.appendChild(form);
-        modal.appendChild(actions);
-
-        overlay.appendChild(modal);
-        overlay.onclick = (e) => {
-            if (e.target === overlay) {
-                state.modal = null;
-                render();
-            }
-        };
-
-        app.appendChild(overlay);
-    }
-
-    if (state.convertToGroupModal) {
-        const active = state.vaults.find(v => v.id === state.activeVaultId);
-        if (!active) {
-            state.convertToGroupModal = null;
-        } else {
-            const overlay = createElement('div', 'modal-overlay', []);
-            const modal = createElement('div', 'modal modal-convert-group', []);
-            const title = createElement('div', 'modal-title', ['In Gruppe konvertieren']);
-
-            const prefixLabel = createElement('label', 'modal-label', ['Gruppen-Prefix (z.B. POSTGRES_)']);
-            const prefixInput = createElement('input', 'input modal-input', []);
-            prefixInput.placeholder = 'POSTGRES_';
-            prefixInput.value = state.convertToGroupModal.prefix;
-            prefixInput.oninput = (e) => {
-                state.convertToGroupModal.prefix = e.target.value;
-            };
-
-            const listLabel = createElement('div', 'modal-label convert-group-list-label', ['Keys – Suffix anpassen']);
-            const listWrap = createElement('div', 'convert-group-list', []);
-            state.convertToGroupModal.items.forEach((item, i) => {
-                const row = createElement('div', 'convert-group-list-row', []);
-                const keyLabel = createElement('span', 'convert-group-key-label', [item.currentKey]);
-                const suffixInput = createElement('input', 'input convert-group-suffix', []);
-                suffixInput.value = item.suffix;
-                suffixInput.oninput = (e) => {
-                    state.convertToGroupModal.items[i].suffix = e.target.value;
-                };
-                row.appendChild(keyLabel);
-                row.appendChild(suffixInput);
-                listWrap.appendChild(row);
-            });
-
-            const actions = createElement('div', 'modal-actions', []);
-            const cancelBtn = createElement('button', 'btn-secondary', ['Abbrechen']);
-            cancelBtn.onclick = () => {
-                state.convertToGroupModal = null;
-                render();
-            };
-            const convertBtn = createElement('button', 'btn-primary', ['Konvertieren']);
-            convertBtn.onclick = async () => {
-                const prefix = (state.convertToGroupModal.prefix || '').trim();
-                if (!prefix) return;
-                const entries = [...(active.entries || [])];
-                state.convertToGroupModal.items.forEach(({ index, suffix }) => {
-                    const fullKey = prefix + (suffix || '').trim();
-                    if (entries[index]) {
-                        entries[index] = { ...entries[index], key: fullKey, groupPrefix: prefix };
-                    }
-                });
-                try {
-                    await UpdateVault({ ...active, entries });
-                    const fresh = await GetVault(active.id);
-                    state.vaults = state.vaults.map(v => v.id === fresh.id ? fresh : v);
-                    state.selectedEntryIndices = new Set();
-                    state.convertToGroupModal = null;
-                    render();
-                } catch (err) {
-                    console.error('Failed to convert to group', err);
-                }
-            };
-
-            actions.appendChild(cancelBtn);
-            actions.appendChild(convertBtn);
-            modal.appendChild(title);
-            modal.appendChild(prefixLabel);
-            modal.appendChild(prefixInput);
-            modal.appendChild(listLabel);
-            modal.appendChild(listWrap);
-            modal.appendChild(actions);
-            overlay.appendChild(modal);
-            overlay.onclick = (e) => {
-                if (e.target === overlay) {
-                    state.convertToGroupModal = null;
-                    render();
-                }
-            };
-            app.appendChild(overlay);
-        }
-    }
-
-    if (state.duplicateConfirmModal) {
-        const { target, keysToOverwrite } = state.duplicateConfirmModal;
-        const targetLabel = target === 'staging' ? 'STAGING' : 'PROD';
-        const keyList = keysToOverwrite.length <= 3
-            ? keysToOverwrite.join(', ')
-            : keysToOverwrite.slice(0, 2).join(', ') + ' und ' + (keysToOverwrite.length - 2) + ' weitere';
-        const overlay = createElement('div', 'modal-overlay', []);
-        const modal = createElement('div', 'modal', []);
-        const title = createElement('div', 'modal-title', ['Duplizieren bestätigen']);
-        const text = createElement('p', 'duplicate-confirm-text', []);
-        text.textContent = `${targetLabel} hat für die ausgewählten Keys bereits Einträge (${keyList}). Willst du sie wirklich duplizieren? Hinweis: Die Werte in ${targetLabel} werden dabei überschrieben!`;
-        const actions = createElement('div', 'modal-actions', []);
-        const cancelBtn = createElement('button', 'btn-secondary', ['Abbrechen']);
-        cancelBtn.onclick = () => {
-            state.duplicateConfirmModal = null;
-            render();
-        };
-        const confirmBtn = createElement('button', 'btn-primary', ['Duplizieren']);
-        confirmBtn.onclick = () => {
-            duplicateDevToTarget(target);
-        };
-        actions.appendChild(cancelBtn);
-        actions.appendChild(confirmBtn);
-        modal.appendChild(title);
-        modal.appendChild(text);
-        modal.appendChild(actions);
-        overlay.appendChild(modal);
-        overlay.onclick = (e) => {
-            if (e.target === overlay) {
-                state.duplicateConfirmModal = null;
-                render();
-            }
-        };
-        app.appendChild(overlay);
-    }
+    restoreUiState(snapshot);
 }
 
-document.addEventListener('click', hideContextMenu);
+// Die Suche tippt sich fluessiger, wenn nicht bei jedem Zeichen der komplette
+// Baum inklusive Sidebar neu gebaut wird.
+function renderMainOnly() {
+    const snapshot = captureUiState();
+    const body = document.querySelector('.app-body');
+    const old = body ? body.querySelector('.main') : null;
+    if (!body || !old) { render(); return; }
+    old.replaceWith(renderMain());
+
+    const existingBar = app.querySelector('.selection-bar');
+    if (existingBar) existingBar.remove();
+    if (state.selected.size > 0) app.appendChild(renderSelectionBar());
+
+    restoreUiState(snapshot);
+}
+
+/* ==========================================================================
+   Globale Tastatur und Klicks
+   ========================================================================== */
+
+document.addEventListener('click', () => {
+    if (state.contextMenu) {
+        state.contextMenu = null;
+        render();
+    }
+});
+
+// Eigenes Kontextmenue nur dort, wo wir wirklich eines anbieten.
 document.addEventListener('contextmenu', (e) => {
-    // Global Browser-Kontextmenü deaktivieren, eigenes Menü wird separat gerendert.
-    e.preventDefault();
+    if (!e.target.closest('.key-row-entry, .vault-item')) {
+        e.preventDefault();
+    }
+});
+
+document.addEventListener('keydown', (e) => {
+    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+
+    if (e.key === 'Escape') {
+        if (state.contextMenu) { state.contextMenu = null; render(); return; }
+        if (state.confirmModal) { state.confirmModal = null; render(); return; }
+        if (state.duplicateModal) { state.duplicateModal = null; render(); return; }
+        if (state.convertModal) { state.convertModal = null; render(); return; }
+        if (state.vaultModal) { state.vaultModal = null; render(); return; }
+        if (state.editing) { state.editing = null; render(); return; }
+        if (state.addPanel) { state.addPanel = null; render(); return; }
+        if (state.selected.size > 0) { clearSelection(); render(); return; }
+        if (state.search) { state.search = ''; render(); }
+        return;
+    }
+
+    if (typing) return;
+
+    if (e.key === '/') {
+        e.preventDefault();
+        const input = document.querySelector('[data-focus-key="search"]');
+        if (input) input.focus();
+        return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        const input = document.querySelector('[data-focus-key="search"]');
+        if (input) { input.focus(); input.select(); }
+        return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        if (activeVault()) openAddPanel('single');
+    }
 });
 
 loadVaults();

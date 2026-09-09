@@ -1,17 +1,15 @@
+/* Basis-Layout und Schriftart.
+   Farben und Typografie liegen bewusst komplett in app.css; hier stand
+   frueher zusaetzlich `text-align: center` (aus dem Wails-Template), was
+   jede Tabellenzelle zentriert hat, sowie eine hartkodierte
+   Hintergrundfarbe, die gegen die Design-Tokens gearbeitet hat. */
+
 html {
-    background-color: rgba(27, 38, 54, 1);
-    text-align: center;
-    color: white;
     height: 100%;
     overflow: hidden;
 }
 
 body {
-    margin: 0;
-    color: white;
-    font-family: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
-    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-    sans-serif;
     height: 100%;
     overflow: hidden;
 }
@@ -20,12 +18,12 @@ body {
     font-family: "Nunito";
     font-style: normal;
     font-weight: 400;
+    font-display: swap;
     src: local(""),
     url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
 }
 
 #app {
     height: 100vh;
-    text-align: center;
     overflow: hidden;
 }
