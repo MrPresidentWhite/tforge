@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +30,10 @@ type Agent struct {
 	timeout      time.Duration
 }
 
+// listenAddr is the loopback address the agent binds to. It is deliberately
+// not configurable: the CLI and the security model both assume loopback only.
+const listenAddr = "127.0.0.1:5959"
+
 func main() {
 	lockTimeout := flag.Duration("lock-timeout", 0, "inactivity timeout before the agent auto-locks (0 = disabled)")
 	flag.Parse()
@@ -46,6 +53,7 @@ func main() {
 		protector:    protector,
 		timeout:      *lockTimeout,
 		lastActivity: time.Now(),
+		locked:       true, // start locked by default; requires explicit unlock
 	}
 
 	agent.startInactivityWatcher()
@@ -70,23 +78,90 @@ func main() {
 	mux.HandleFunc("/reload", agent.handleReload)
 
 	server := &http.Server{
-		Addr:    "127.0.0.1:5959",
-		Handler: mux,
+		Addr:    listenAddr,
+		Handler: onlyLocalClients(mux),
+		// Without these a single stalled connection can hold a handler
+		// goroutine open indefinitely.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Println("tforge-agent listening on http://127.0.0.1:5959")
+	log.Printf("tforge-agent listening on http://%s", listenAddr)
 	log.Fatal(server.ListenAndServe())
 }
 
+// onlyLocalClients rejects requests that did not come from a local, non-browser
+// client. Binding to loopback alone is not enough: any web page the user visits
+// can send a request to 127.0.0.1 from their browser. Without this guard, a
+// malicious page could POST /unlock and pop a Windows Hello prompt, and a DNS
+// rebinding attack could go on to read /env.
+//
+// Two checks cover both cases:
+//   - a Host header that is not our loopback address means the request was
+//     addressed to some other name that happens to resolve here (rebinding),
+//   - an Origin or Sec-Fetch-Site header means a browser sent it; nothing that
+//     legitimately talks to the agent runs in a browser.
+func onlyLocalClients(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "invalid host", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
+			http.Error(w, "browser requests are not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isLoopbackHost reports whether a request's Host header names this agent on
+// the loopback interface.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+
+	hostname, port, err := net.SplitHostPort(host)
+	if err != nil {
+		// No port in the header; treat the whole value as the hostname.
+		hostname = host
+		port = ""
+	}
+	if port != "" && port != agentPort() {
+		return false
+	}
+
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(hostname, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func agentPort() string {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
 func (a *Agent) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	a.touchActivity()
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
 // handleLock puts the agent into a locked state where env access is disabled.
-// This is intentionally simple and local-only for v1.1; there is no
-// authentication yet.
+// Locking never requires re-authentication; only unlocking does.
 func (a *Agent) handleLock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -100,8 +175,8 @@ func (a *Agent) handleLock(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUnlock returns the agent to the unlocked state so env access works
-// again. Like handleLock, this is intentionally simple for the first
-// iteration and does not yet enforce authentication.
+// again. It enforces a short OS-level re-authentication step via the
+// secure.RequireOSReauth hook before actually unlocking.
 func (a *Agent) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -109,6 +184,12 @@ func (a *Agent) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.touchActivity()
+
+	if err := secure.RequireOSReauth(); err != nil {
+		http.Error(w, "re-auth failed: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
 	a.setLocked(false)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("unlocked"))
@@ -134,10 +215,16 @@ func (a *Agent) startInactivityWatcher() {
 
 		for range ticker.C {
 			a.mu.Lock()
+			relocked := false
 			if !a.locked && !a.lastActivity.IsZero() && time.Since(a.lastActivity) > a.timeout {
 				a.locked = true
+				relocked = true
 			}
 			a.mu.Unlock()
+
+			if relocked {
+				log.Printf("auto-locked after %s of inactivity", a.timeout)
+			}
 		}
 	}()
 }
@@ -169,7 +256,7 @@ func (a *Agent) startVaultWatcher(cfgDir string) {
 					return
 				}
 				if ev.Name == vaultPath && (ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0) {
-					if err := a.reloadVaultsFromDisk(); err != nil {
+					if err := a.reloadVaultsFromDisk(); err != nil && !errors.Is(err, errNoVaultFile) {
 						log.Printf("vault reload error: %v", err)
 					}
 				}
@@ -205,14 +292,25 @@ type statusResponse struct {
 }
 
 // reloadVaultsFromDisk loads vaults from disk and replaces the in-memory state.
+//
+// A missing vault file is reported as an error rather than applied: LoadVaults
+// returns (nil, nil) in that case, and blindly applying it would silently drop
+// every vault the agent still holds, for example while the file is being
+// replaced or if it was removed by accident.
 func (a *Agent) reloadVaultsFromDisk() error {
 	vaults, err := storage.LoadVaults(a.protector)
 	if err != nil {
 		return err
 	}
+	if vaults == nil {
+		return errNoVaultFile
+	}
 	a.svc.SetAll(vaults)
 	return nil
 }
+
+// errNoVaultFile signals that there is currently no vault file on disk.
+var errNoVaultFile = errors.New("no vault file on disk; keeping current state")
 
 // handleReload re-reads vaults from disk and replaces the in-memory state.
 // Useful after the CLI (or another process) has created or updated vaults
@@ -225,7 +323,11 @@ func (a *Agent) handleReload(w http.ResponseWriter, r *http.Request) {
 	a.touchActivity()
 
 	if err := a.reloadVaultsFromDisk(); err != nil {
-		http.Error(w, "reload: "+err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, errNoVaultFile) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, "reload: "+err.Error(), status)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -257,6 +359,11 @@ func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) handleEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	a.touchActivity()
 	if a.isLocked() {
 		http.Error(w, "agent is locked; env access disabled", http.StatusLocked)
@@ -326,4 +433,3 @@ func buildEnvForVault(v *vault.Vault, target string) map[string]string {
 	}
 	return env
 }
-
