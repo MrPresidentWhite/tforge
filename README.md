@@ -350,6 +350,13 @@ eval "$(tforge --env dev --export --export-format shell @MyVault)"
 
 # import mode (create a new vault from an env-style file)
 tforge --create-vault MyVault --file path/to/.env --type secrets --duplicate-to prod
+
+# encrypted backup and restore
+tforge --backup vaults.tfbak
+tforge --restore vaults.tfbak
+
+# delete a vault (note: flags must come before the vault reference)
+tforge --delete -y @MyVault
 ```
 
 Rules:
@@ -357,6 +364,10 @@ Rules:
 - positional order:
   - first non‑flag argument: vault reference (`@Name` or `ID`)
   - everything after that: command to run (optionally with a `--` separator)
+- because of that, **flags have to come before the vault reference**. Go's flag
+  package stops parsing at the first non‑flag argument, which is exactly what
+  makes `tforge @MyVault npm run dev -- --port 3000` pass the trailing flags to
+  the child process rather than to `tforge`.
 - CLI calls the agent at `http://127.0.0.1:5959/env?...` and merges returned
   env vars into the child process’s `Env`.
 
@@ -397,6 +408,50 @@ Import mode:
   `--duplicate-to staging` or `--duplicate-to prod` to copy the same values
   into another environment.
 - `--type` controls the entry type (`secrets` – default, `env`, or `note`).
+
+### Backup & restore
+
+`vaults.bin` is sealed by a key that never leaves the machine: DPAPI is bound
+to the Windows user profile, the keyring to the local login. That is good for
+day‑to‑day protection and useless for recovery — a reinstalled system or a dead
+disk takes the key with it. A backup therefore cannot use the same key, so it
+is protected by a passphrase you supply.
+
+```bash
+tforge --backup vaults.tfbak
+```
+
+```bash
+tforge --restore vaults.tfbak
+```
+
+- The passphrase is asked for twice when creating a backup and never echoed.
+  It must be at least 12 characters: a backup holds every secret you have and,
+  unlike the agent, it can be copied and attacked offline at leisure.
+- **Losing the passphrase means losing the backup.** There is no recovery path
+  and no way for anyone, including you, to open the file without it. Keep it
+  somewhere other than next to the backup.
+- After writing, the file is immediately read back and decrypted. A backup that
+  cannot be restored is worse than none at all, because it is trusted; if the
+  check fails the file is deleted and the command reports an error.
+- `--backup` refuses to overwrite an existing file unless you pass `--force`.
+- `--restore` **merges** by default: vaults from the backup are added, and any
+  whose ID or name already exists locally are skipped and listed. A colliding
+  name matters as much as a colliding ID, because the agent resolves a
+  reference by either and takes the first match.
+- `--restore --replace` discards the local vaults and installs the backup as-is.
+  It asks for confirmation unless `-y` is given.
+
+For automation, `TFORGE_BACKUP_PASSPHRASE` is used instead of prompting. That
+is a deliberate trade-off — an environment variable is readable by other
+processes of the same user — so the interactive prompt remains the default and
+the variable is only consulted when it is set.
+
+Backup file format (`TFBAK`, version 1): the passphrase is stretched with
+Argon2id into a 256‑bit key, and the payload is encrypted with AES‑256‑GCM.
+The KDF parameters are stored in the file, so they can be raised later without
+invalidating existing backups, and they are covered by the authentication tag,
+so they cannot be weakened to make an offline attack cheaper.
 
 Example:
 
@@ -629,12 +684,10 @@ everything else.
 - [x] ~~agent starts locked, with inactivity timeout and Windows Hello re‑auth on unlock~~
 - [x] ~~a versioned header for the storage format, recording the format version
       and which protector sealed the payload~~
-- [ ] **encrypted export / import for backup and recovery.** DPAPI is bound to
-      the Windows user profile: if that profile is gone — reinstall, corruption,
-      dead disk — `vaults.bin` cannot be decrypted by anything, and there is
-      currently no way out. Of everything on this list, this is the only gap
-      with no mitigation at all today. The storage header above is the
-      groundwork; the export container can reuse the same framing.
+- [x] ~~encrypted, passphrase‑protected backup and restore (`--backup` /
+      `--restore`), so a lost user profile or a dead disk no longer takes the
+      vaults with it~~
+- [ ] backup and restore from the GUI as well; today they are CLI‑only
 - [ ] **a guard against concurrent writes.** The GUI and the CLI both
       read‑modify‑write the entire file without a lock. Deleting a vault from
       the CLI while the GUI is open brings it back on the GUI’s next save, and

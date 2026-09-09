@@ -49,9 +49,28 @@ func main() {
 	entryType := flag.String("type", "secrets", "entry type for imported keys (secrets|env|note)")
 
 	deleteVault := flag.Bool("delete", false, "delete a vault by name or ID")
-	skipConfirm := flag.Bool("y", false, "skip confirmation when deleting a vault")
+	skipConfirm := flag.Bool("y", false, "skip confirmation for destructive operations")
+
+	backupTo := flag.String("backup", "", "write an encrypted, passphrase-protected backup of all vaults to this file")
+	restoreFrom := flag.String("restore", "", "restore vaults from an encrypted backup file")
+	replace := flag.Bool("replace", false, "with --restore: replace all local vaults instead of merging")
+	force := flag.Bool("force", false, "with --backup: overwrite an existing file")
 
 	flag.Parse()
+
+	// Backup and restore work directly on local storage and need no agent.
+	if *backupTo != "" {
+		if err := runBackup(*backupTo, *force); err != nil {
+			log.Fatalf("backup: %v", err)
+		}
+		return
+	}
+	if *restoreFrom != "" {
+		if err := runRestore(*restoreFrom, *replace, *skipConfirm); err != nil {
+			log.Fatalf("restore: %v", err)
+		}
+		return
+	}
 
 	// Import mode: create a new vault from an env file.
 	if *createVault != "" {
@@ -64,7 +83,9 @@ func main() {
 	args := flag.Args()
 	if len(args) == 0 {
 		if *deleteVault {
-			log.Fatalf("usage: tforge --delete @VaultName [-y]")
+			// Go's flag package stops parsing at the first non-flag argument, so
+			// -y has to come before the vault reference.
+			log.Fatalf("usage: tforge --delete [-y] @VaultName")
 		}
 		log.Fatalf("usage: tforge [--env dev|staging|prod] @VaultName [command ...]")
 	}
