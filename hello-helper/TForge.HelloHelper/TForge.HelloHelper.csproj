@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Aktuelles, supportetes Windows-TargetFramework.
+         Das Windows-Moniker (10.0.19041.0) bringt die WinRT-Projektion
+         inklusive Windows.Security.Credentials.UI bereits mit; ein
+         zusaetzliches Microsoft.Windows.SDK.NET-Paket darf hier NICHT stehen,
+         sonst kollidieren zwei WinRT.Runtime.dll (Fehler NETSDK1152). -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Publish-Defaults für Release-Builds -->
+    <RuntimeIdentifier Condition="'$(Configuration)'=='Release'">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(Configuration)'=='Release'">true</SelfContained>
+    <PublishSingleFile Condition="'$(Configuration)'=='Release'">true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Trimming testen wir optional, daher vorerst deaktiviert -->
+    <!-- <PublishTrimmed>true</PublishTrimmed> -->
+    <!-- <TrimMode>partial</TrimMode> -->
+  </PropertyGroup>
+
+</Project>
